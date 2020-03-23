@@ -33,7 +33,10 @@ struct frame_image_scaler {
 #define VIDIOC_DEFAULT_CMD_SCALER_CAP	 _IOWR('V', BASE_VIDIOC_PRIVATE + 3, struct frame_image_scalercap)
 #define VIDIOC_DEFAULT_CMD_SET_SCALER	 _IOW('V', BASE_VIDIOC_PRIVATE + 4, struct frame_image_scaler)
 #define IMAGE_TUNING_CID_CONTROL_FPS  (0x08000000+0x20*7)
-#define log(fmt, args...) printf("%s:%d(%s) $ "fmt"\n", __FILE__, __LINE__, __FUNCTION__, ##args)
+#define log(fmt, args...) do { \
+    char *s = strrchr(__FILE__, '/'); \
+    printf("%s:%d(%s) $ "fmt"\n", s+1, __LINE__, __FUNCTION__, ##args);\
+} while(0)
 
 enum io_method {
 	IO_METHOD_READ,
@@ -86,15 +89,11 @@ typedef struct {
 	unsigned short power_gpio;		/**< 摄像头power 接口链接的GPIO，注意：现在没有启用该参数 */
 } IMPSensorInfo;
 
-static enum io_method   io = IO_METHOD_MMAP;
 static int              fd_subdev = -1;
 static int              fd_video0 = -1;
 static int              fd_video1 = -1;
 struct buffer          *buffers;
 static unsigned int     n_buffers;
-static int              out_buf;
-static int              force_format;
-static int              frame_count = 70;
 
 static void errno_exit(const char *s)
 {
@@ -140,22 +139,102 @@ static int open_device(char *dev_name)
     return fd;
 }
 
+static void process_image(const void *p, int size)
+{
+    log("got frame addr:%p size:%d", p, size);
+    FILE *fp = fopen("./capture.jpg", "w");
+
+    fwrite(p, size, 1, fp);
+    fclose(fp);
+}
+
+static int read_frame(void)
+{
+    struct v4l2_buffer buf;
+    unsigned int i;
+
+    CLEAR(buf);
+
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_USERPTR;
+
+    if (-1 == xioctl(fd_video1, VIDIOC_DQBUF, &buf)) {
+        switch (errno) {
+            case EAGAIN:
+                return 0;
+            case EIO:
+                /* Could ignore EIO, see spec. */
+                /* fall through */
+            default:
+                errno_exit("VIDIOC_DQBUF");
+        }
+    }
+
+    for (i = 0; i < n_buffers; ++i)
+        if (buf.m.userptr == (unsigned long)buffers[i].start
+                && buf.length == buffers[i].length)
+            break;
+
+    assert(i < n_buffers);
+    process_image((void *)buf.m.userptr, buf.bytesused);
+    if (-1 == xioctl(fd_video1, VIDIOC_QBUF, &buf))
+        errno_exit("VIDIOC_QBUF");
+    return 1;
+}
+
+static void mainloop(void)
+{
+	unsigned int count = 1;
+
+	while (count-- > 0) {
+		for (;;) {
+			fd_set fds;
+			struct timeval tv;
+			int r;
+
+			FD_ZERO(&fds);
+			FD_SET(fd_video1, &fds);
+
+			/* Timeout. */
+			tv.tv_sec = 2;
+			tv.tv_usec = 0;
+
+			r = select(fd_video1 + 1, &fds, NULL, NULL, &tv);
+
+			if (-1 == r) {
+				if (EINTR == errno)
+					continue;
+				errno_exit("select");
+			}
+
+			if (0 == r) {
+				fprintf(stderr, "select timeout\\n");
+				exit(EXIT_FAILURE);
+			}
+
+			if (read_frame())
+				break;
+			/* EAGAIN - continue select loop. */
+		}
+	}
+}
+
 static void init_device(void)
 {
-	struct v4l2_format fmt;
-	unsigned int min;
+    struct v4l2_format fmt;
+    unsigned int min;
     IMPSensorInfo sensor_info;
     int ret = 0;
     struct v4l2_input input;
 
-	fd_subdev = open_device("/dev/v4l-subdev0");
+    fd_subdev = open_device("/dev/v4l-subdev0");
 
     /*1.注册sensor jxh62*/
-	memset(&sensor_info, 0, sizeof(IMPSensorInfo));
-	memcpy(sensor_info.name, SENSOR_NAME, sizeof(SENSOR_NAME));
-	sensor_info.cbus_type = TX_SENSOR_CONTROL_INTERFACE_I2C;
-	memcpy(sensor_info.i2c.type, SENSOR_NAME, sizeof(SENSOR_NAME));
-	sensor_info.i2c.addr = 0x30;
+    memset(&sensor_info, 0, sizeof(IMPSensorInfo));
+    memcpy(sensor_info.name, SENSOR_NAME, sizeof(SENSOR_NAME));
+    sensor_info.cbus_type = TX_SENSOR_CONTROL_INTERFACE_I2C;
+    memcpy(sensor_info.i2c.type, SENSOR_NAME, sizeof(SENSOR_NAME));
+    sensor_info.i2c.addr = 0x30;
     if (-1 == xioctl(fd_subdev, VIDIOC_REGISTER_SENSOR, &sensor_info)) {
         log("VIDIOC_REGISTER_SENSOR %s", strerror(errno));
         exit(EXIT_FAILURE);
@@ -262,6 +341,7 @@ static void init_device(void)
     }
     log("scaler{max_w:%d max_h:%d min_w:%d min_h:%d}", 
             scalercap.max_width, scalercap.max_height, scalercap.min_width, scalercap.min_height);
+    /*13. 设置分辨率调整*/
     struct frame_image_scaler scaler;
     scaler.out_width = scalercap.max_width;
     scaler.out_height = scalercap.max_height;
@@ -269,6 +349,90 @@ static void init_device(void)
         log("VIDIOC_DEFAULT_CMD_SET_SCALER %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
+    /*14. 尝试设置某种视频格式*/
+    struct v4l2_format format;
+    format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    format.fmt.pix.width = 1280;
+    format.fmt.pix.height = 720;
+    format.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
+    format.fmt.pix.field = V4L2_FIELD_ANY;
+    format.fmt.pix.bytesperline = 0;
+    format.fmt.pix.sizeimage = 0;
+    format.fmt.pix.colorspace = 0;
+    if (-1 == xioctl(fd_video1, VIDIOC_TRY_FMT, &format)) {
+        log("VIDIOC_TRY_FMT %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    // try了某种format之后，如果不支持，底层驱动会改写v4l2_format结构里面的相应的成员。
+    // 比如这里field传了V4L2_FIELD_ANY进去，底层驱动会把这个改写成V4L2_FIELD_INTERLACED
+    log("fileld after try:%d", format.fmt.pix.field);
+    /*15. 设置视频格式*/
+    if (-1 == xioctl(fd_video1, VIDIOC_S_FMT, &format)) {
+        log("VIDIOC_S_FMT %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    log("sizeimage:%d", format.fmt.pix.sizeimage);
+    /*16. 三种方式读取一帧数据
+     *  a. 调用read
+     *  b. 内核申请内存，告诉用户层,用户层map到自己的空间
+     *  c. 用户层申请内存，告诉内核层，内核层使用
+     *  我们使用用户层申请内存
+     *  */
+    struct v4l2_requestbuffers req;
+
+    CLEAR(req);
+
+    req.count  = 4;
+    req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_USERPTR;
+    if (-1 == xioctl(fd_video1, VIDIOC_REQBUFS, &req)) {
+        if (EINVAL == errno) {
+            log("/dev/video0 does not support user pointer i/on");
+            exit(EXIT_FAILURE);
+        } else {
+            log("VIDIOC_REQBUFS %s", strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    log("req.count:%d", req.count);
+    buffers = calloc(4, sizeof(*buffers));
+
+    if (!buffers) {
+        fprintf(stderr, "Out of memory\\n");
+        exit(EXIT_FAILURE);
+    }
+
+    for (n_buffers = 0; n_buffers < 4; ++n_buffers) {
+        buffers[n_buffers].length = format.fmt.pix.sizeimage;
+        buffers[n_buffers].start = malloc(format.fmt.pix.sizeimage);
+
+        if (!buffers[n_buffers].start) {
+            fprintf(stderr, "Out of memory\\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    /*17. 用户申请的内存地址告诉内核*/
+    int i = 0;
+    for (i = 0; i < n_buffers; ++i) {
+        struct v4l2_buffer buf;
+
+        CLEAR(buf);
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_USERPTR;
+        buf.index = i;
+        buf.m.userptr = (unsigned long)buffers[i].start;
+        buf.length = buffers[i].length;
+
+        if (-1 == xioctl(fd_video1, VIDIOC_QBUF, &buf))
+            errno_exit("VIDIOC_QBUF");
+    }
+    /*18. 启动视频流*/
+	enum v4l2_buf_type type;
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (-1 == xioctl(fd_video1, VIDIOC_STREAMON, &type))
+        log("VIDIOC_STREAMON %s", strerror(errno));
 }
 
 static void close_device(void)
@@ -282,89 +446,10 @@ static void close_device(void)
 
 }
 
-static void usage(FILE *fp, int argc, char **argv)
-{
-	fprintf(fp,
-			"Usage: %s [options]\\n\\n"
-			"Version 1.3\\n"
-			"Options:\\n"
-			"-d | --device name   Video device name [/dev/video0]n"
-			"-h | --help          Print this messagen"
-			"-m | --mmap          Use memory mapped buffers [default]n"
-			"-r | --read          Use read() callsn"
-			"-u | --userp         Use application allocated buffersn"
-			"-o | --output        Outputs stream to stdoutn"
-			"-f | --format        Force format to 640x480 YUYVn"
-			"-c | --count         Number of frames to grab [%i]n"
-			"",
-			argv[0], frame_count);
-}
-
-static const char short_options[] = "d:hmruofc:";
-
-static const struct option
-long_options[] = {
-	{ "device", required_argument, NULL, 'd' },
-	{ "help",   no_argument,       NULL, 'h' },
-	{ "mmap",   no_argument,       NULL, 'm' },
-	{ "read",   no_argument,       NULL, 'r' },
-	{ "userp",  no_argument,       NULL, 'u' },
-	{ "output", no_argument,       NULL, 'o' },
-	{ "format", no_argument,       NULL, 'f' },
-	{ "count",  required_argument, NULL, 'c' },
-	{ 0, 0, 0, 0 }
-};
-
-void parse_console_param(int argc, char **argv)
-{
-    for (;;) {
-        int idx;
-        int c;
-
-        c = getopt_long(argc, argv,
-                short_options, long_options, &idx);
-        if (-1 == c)
-            break;
-        switch (c) {
-            case 0: /* getopt_long() flag */
-                break;
-            case 'd':
-                break;
-            case 'h':
-                usage(stdout, argc, argv);
-                exit(EXIT_SUCCESS);
-            case 'm':
-                io = IO_METHOD_MMAP;
-                break;
-            case 'r':
-                io = IO_METHOD_READ;
-                break;
-            case 'u':
-                io = IO_METHOD_USERPTR;
-                break;
-            case 'o':
-                out_buf++;
-                break;
-            case 'f':
-                force_format++;
-                break;
-            case 'c':
-                errno = 0;
-                frame_count = strtol(optarg, NULL, 0);
-                if (errno)
-                    errno_exit(optarg);
-                break;
-            default:
-                usage(stderr, argc, argv);
-                exit(EXIT_FAILURE);
-        }
-    }
-}
-
 int main(int argc, char **argv)
 {
-    parse_console_param(argc, argv);
 	init_device();
+    mainloop();
 	close_device();
 
 	return 0;
