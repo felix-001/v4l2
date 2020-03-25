@@ -140,7 +140,7 @@ static int isp_probe(struct platform_device *pdev)
         log("Failed to register video device");
         goto free_video_device;
     }
-    adapter = i2c_get_adapter(1);
+    adapter = i2c_get_adapter(0);
     if (!adapter) {
         log( "Failed to get I2C adapter 1, deferring probe");
         err = -3;// FIXME
