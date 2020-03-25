@@ -354,7 +354,7 @@ static void init_device(void)
     format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     format.fmt.pix.width = 1280;
     format.fmt.pix.height = 720;
-    format.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
+    format.fmt.pix.pixelformat = V4L2_PIX_FMT_SBGGR12;//V4L2_PIX_FMT_NV12;
     format.fmt.pix.field = V4L2_FIELD_ANY;
     format.fmt.pix.bytesperline = 0;
     format.fmt.pix.sizeimage = 0;
