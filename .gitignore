@@ -1,1 +1,9 @@
 build
+*.o
+*.ko
+Module.symvers
+modules.order
+*.mod.c
+*.cmd
+*.swp
+.tmp_versions
