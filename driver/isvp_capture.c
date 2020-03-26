@@ -17,10 +17,19 @@
 typedef struct {
     struct v4l2_device v4l2_dev;
     struct video_device *vfd;
+    struct device *dev;
 } isp_device_t;
 
 static int isvp_querycap(struct file *file, void  *priv, struct v4l2_capability *cap)
 {
+    isp_device_t *ispdev = video_drvdata(file);
+
+	strcpy(cap->driver, "isp capture");
+	strcpy(cap->card, "isp capture dev");
+	strlcpy(cap->bus_info, ispdev->v4l2_dev.name, sizeof(cap->bus_info));
+	cap->version = 0x00000001;
+	cap->capabilities = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
+
     return 0;
 }
 
@@ -34,40 +43,10 @@ static int isvp_s_priority(struct file *file, void *priv, enum v4l2_priority p)
     return 0;
 }
 
-
 static const struct v4l2_ioctl_ops isvp_ioctl_ops = {
-    .vidioc_querycap        	= isvp_querycap,
+    .vidioc_querycap        = isvp_querycap,
     .vidioc_g_priority		= isvp_g_priority,
     .vidioc_s_priority		= isvp_s_priority,
-#if 0
-    .vidioc_enum_fmt_vid_cap	= isvp_enum_fmt_vid_cap,
-    .vidioc_g_fmt_vid_cap  		= isvp_g_fmt_vid_cap,
-    .vidioc_s_fmt_vid_cap		= isvp_s_fmt_vid_cap,
-    .vidioc_try_fmt_vid_cap		= isvp_try_fmt_vid_cap,
-    .vidioc_enum_input		= isvp_enum_input,
-    .vidioc_s_input			= isvp_s_input,
-    .vidioc_g_input			= isvp_g_input,
-    .vidioc_reqbufs         	= isvp_reqbufs,
-    .vidioc_querybuf        	= isvp_querybuf,
-    .vidioc_querystd		= isvp_querystd,
-    .vidioc_s_std           	= isvp_s_std,
-    .vidioc_g_std			= isvp_g_std,
-    .vidioc_qbuf            	= isvp_qbuf,
-    .vidioc_dqbuf           	= isvp_dqbuf,
-    .vidioc_streamon        	= isvp_streamon,
-    .vidioc_streamoff       	= isvp_streamoff,
-    .vidioc_cropcap         	= isvp_cropcap,
-    .vidioc_enum_dv_timings         = isvp_enum_dv_timings,
-    .vidioc_query_dv_timings        = isvp_query_dv_timings,
-    .vidioc_s_dv_timings            = isvp_s_dv_timings,
-    .vidioc_g_dv_timings            = isvp_g_dv_timings,
-    .vidioc_g_chip_ident		= isvp_g_chip_ident,
-#ifdef CONFIG_VIDEO_ADV_DEBUG
-    .vidioc_g_register		= isvp_dbg_g_register,
-    .vidioc_s_register		= isvp_dbg_s_register,
-#endif
-    .vidioc_log_status		= isvp_log_status,
-#endif
 };
 
 static int isvp_open(struct file *file)
@@ -123,7 +102,9 @@ static int isp_probe(struct platform_device *pdev)
         goto exit;
     }
 
-    err = v4l2_device_register(&pdev->dev, &ispdev->v4l2_dev);
+    ispdev->dev = &pdev->dev;
+    sprintf(ispdev->v4l2_dev.name, "isp v4l2 name");
+    err = v4l2_device_register(ispdev->dev, &ispdev->v4l2_dev);
     if (err) {
         log("Error registering v4l2 device");
         goto exit;
@@ -140,6 +121,7 @@ static int isp_probe(struct platform_device *pdev)
         log("Failed to register video device");
         goto free_video_device;
     }
+    video_set_drvdata(ispdev->vfd, ispdev);
     adapter = i2c_get_adapter(0);
     if (!adapter) {
         log( "Failed to get I2C adapter 1, deferring probe");

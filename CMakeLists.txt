@@ -16,7 +16,8 @@ include_directories( ${CMAKE_CURRENT_SOURCE_DIR}/src )
 #link_directories( ${CMAKE_CURRENT_SOURCE_DIR}/libs )
 
 aux_source_directory( ${CMAKE_CURRENT_SOURCE_DIR}/src DIR_SRCS)
-add_executable( ${APPNAME} ${DIR_SRCS} )
+add_executable( ${APPNAME} src/snapshot.c )
+add_executable( capture src/capture.c )
 target_link_libraries( ${APPNAME} pthread )
 #set(CMAKE_C_FLAGS_DEBUG "${CUSTOM_FLAGS_WITH_SPACE} -g -ggdb -O0 -Wall  -fsanitize=address" )
 
