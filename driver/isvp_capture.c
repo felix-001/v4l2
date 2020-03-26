@@ -176,7 +176,13 @@ exit:
 
 static int __exit isp_remove(struct platform_device *pdev)
 {
+	isp_device_t* ispdev = platform_get_drvdata(pdev);
+
     log("isp remove");
+
+	platform_set_drvdata(pdev, NULL);
+	v4l2_device_unregister(&ispdev->v4l2_dev);
+	kfree(ispdev);
     return 0;
 }
 
