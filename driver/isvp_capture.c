@@ -33,20 +33,14 @@ static int isvp_querycap(struct file *file, void  *priv, struct v4l2_capability 
     return 0;
 }
 
-static int isvp_g_priority(struct file *file, void *priv, enum v4l2_priority *prio)
-{
-    return 0;
-}
-
-static int isvp_s_priority(struct file *file, void *priv, enum v4l2_priority p)
+static int frame_channel_vidioc_cropcap(struct file *file, void *priv, struct v4l2_cropcap *a)
 {
     return 0;
 }
 
 static const struct v4l2_ioctl_ops isvp_ioctl_ops = {
     .vidioc_querycap        = isvp_querycap,
-    .vidioc_g_priority		= isvp_g_priority,
-    .vidioc_s_priority		= isvp_s_priority,
+    .vidioc_cropcap         = isvp_cropcap,
 };
 
 static int isvp_open(struct file *file)
