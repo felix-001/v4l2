@@ -159,7 +159,7 @@ int main()
     }
     crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     crop.c = cropcap.defrect; /* reset to default */
-    if (ioctl(fd, VIDIOC_CROPCAP, &crop) < 0) {
+    if (ioctl(fd, VIDIOC_S_CROP, &crop) < 0) {
         log("VIDIOC_CROPCAP error(%s)", strerror(errno));
         return 0;
     }

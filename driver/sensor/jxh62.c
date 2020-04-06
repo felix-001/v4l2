@@ -29,6 +29,8 @@
 #define DRIVE_CAPABILITY_1
 
 #define SENSOR_NAME "jxh62"
+#define SENSOR_WIDTH 1280
+#define SENSOR_HEIGHT 720
 
 #define log(fmt, args...) printk("%s:%d $ "fmt"\n", __func__, __LINE__, ##args)
 
@@ -58,8 +60,30 @@ static int jxh62_cropcap(struct v4l2_subdev *sd, struct v4l2_cropcap *cc)
     return 0;
 }
 
+static int jxh62_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *crop)
+{
+    // FIXME need to call apical_command() to set left,top,width, height
+    // see isp_core_frame_channel_set_crop()
+    // this need to do in framework
+    return 0;
+}
+
+// sensor 的信息通过这个接口告诉framework
+// .vidioc_g_fmt_vid_cap这个接口要使用到这个接口
+static int jx62_g_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *fmt)
+{
+    fmt->width = SENSOR_WIDTH;
+    fmt->height = SENSOR_HEIGHT;
+    fmt->code = V4L2_MBUS_FMT_SBGGR10_1X10;
+    fmt->field = V4L2_FIELD_NONE;
+    fmt->colorspace = V4L2_COLORSPACE_SRGB;
+    return 0;
+}
+
 static const struct v4l2_subdev_video_ops jxh62_video_ops = {
 	.cropcap = jxh62_cropcap,
+    .s_crop = jxh62_s_crop,
+    .g_mbus_fmt = jx62_g_mbus_fmt,
 };
 
 static const struct v4l2_subdev_ops jxh62_ops = {

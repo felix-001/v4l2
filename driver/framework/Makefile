@@ -1,5 +1,5 @@
 CROSS_COMPILE ?= mips-linux-uclibc-gnu-
-KDIR := ../../Main/kernel
+KDIR := ../../../Main/kernel
 MODULE_NAME := isp_capture
 
 all: modules
