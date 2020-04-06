@@ -140,7 +140,7 @@ int isp_core_register(struct platform_device *pdev, struct v4l2_device *v4l2_dev
     int ret;
     struct v4l2_subdev *sd;
 
-    isp_core = (struct  isp_core_dev*)kzalloc(sizeof(*isp_core), GFP_KERNEL);
+    isp_core = (struct isp_core_dev*)kzalloc(sizeof(*isp_core), GFP_KERNEL);
 	if(!isp_core){
 		log("Failed to allocate sensor device\n");
 		ret = -ENOMEM;
