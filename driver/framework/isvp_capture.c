@@ -23,6 +23,11 @@ typedef struct {
     struct device *dev;
 } isp_device_t;
 
+struct apical_control {
+    uint8_t id;
+    uint32_t value;
+};
+
 struct isp_core_dev {
     struct v4l2_subdev sd;
 };
@@ -134,12 +139,110 @@ static struct video_device isvp_video_template = {
     .release = video_device_release,
 };
 
+static int isp_core_clk_enable(struct platform_device *pdev)
+{
+    struct tx_isp_subdev_platform_data *pdata = pdev->dev.platform_data;
+    int i;
+    struct clk **clks = NULL;
+    struct tx_isp_subdev_clk_info *info = pdata->clks;
+    int ret = 0;
+
+    for (i=0; i<pdata->clk_num; i++) {
+		clks[i] = clk_get(core->dev, info[i].name);
+		if (IS_ERR(clks[i])) {
+			log("Failed to get %s clock %ld\n", info[i].name, PTR_ERR(clks[i]));
+			ret = PTR_ERR(clks[i]);
+            goto exit;
+		}
+		if(info[i].rate != DUMMY_CLOCK_RATE) {
+			ret = clk_set_rate(clks[i], isp_clk);
+			if(ret){
+				log("Failed to set %s clock rate(%ld)\n", info[i].name, info[i].rate);
+                goto exit;
+			}
+            clk_enable(clks[i]);
+		}
+    }
+
+exit:
+	while(--i >= 0){
+		clk_put(clks[i]);
+	}
+	kfree(clks);
+    return ret;
+}
+
+static int isp_core_init(struct platform_device *pdev)
+{
+    isp_core_clk_enable(pdev);
+    return 0;
+}
+
+static int isp_fw_process(void *data)
+{
+	while(!kthread_should_stop()){
+		apical_process();
+		apical_cmd_process();
+		apical_connection_process();
+	}
+	apical_connection_destroy();
+	return 0;
+}
+
+static int isp_core_ops_init(struct v4l2_subdev *sd, u32 on)
+{
+    int ret = 0;
+
+    core->param = load_tx_isp_parameters(core->vin.attr);
+    apical_init();
+    apical_connection_init();
+    system_program_interrupt_event(APICAL_IRQ_DS1_OUTPUT_END, 50);
+    core->process_thread = kthread_run(isp_fw_process, NULL, "apical_isp_fw_process");
+    if(IS_ERR_OR_NULL(core->process_thread)){
+        log("%s[%d] kthread_run was failed!\n",__func__,__LINE__);
+        ret = -1;
+        goto exit;
+    }
+
+exit:
+    return ret;
+}
+
+static const struct v4l2_subdev_core_ops isp_core_subdev_core_ops ={
+	.init = isp_core_ops_init,
+};
+
+int isp_core_video_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *crop)
+{
+    unsigned int chan = CROP_DS;
+    uint8_t id;
+    uint32_t value;
+    int ret = 0;
+    struct apical_control controls[] = 
+    {
+        {IMAGE_RESIZE_WIDTH_ID, }
+    };
+
+    apical_isp_top_bypass_ds1_crop_write(0);
+    return 0;
+}
+
+static struct v4l2_subdev_video_ops	*isp_core_subdev_video_ops = {
+    .s_crop = isp_core_video_s_crop;
+};
+
+static const struct v4l2_subdev_ops isp_core_ops ={
+	.core = &isp_core_subdev_core_ops,
+	.video = &isp_core_subdev_video_ops,
+};
+
 int isp_core_register(struct platform_device *pdev, struct v4l2_device *v4l2_dev)
 {
     struct isp_core_dev *isp_core;
     int ret;
     struct v4l2_subdev *sd;
 
+    isp_core_init();
     isp_core = (struct isp_core_dev*)kzalloc(sizeof(*isp_core), GFP_KERNEL);
 	if(!isp_core){
 		log("Failed to allocate sensor device\n");
@@ -147,10 +250,11 @@ int isp_core_register(struct platform_device *pdev, struct v4l2_device *v4l2_dev
 		goto exit;
 	}
     sd = &isp_core->sd;
+    v4l2_subdev_init(sd, &isp_core_ops);
     v4l2_set_subdevdata(sd, isp_core);
 	ret = v4l2_device_register_subdev(v4l2_dev, sd);
 	if (ret < 0){
-		log("Failed to register csi-subdev!\n");
+		log("Failed to register isp core!\n");
 		ret = -1;// FIXME
 		goto exit;
 	}
@@ -206,6 +310,7 @@ static int isp_subdev_match(struct device *dev, void *data)
 	put_device(dev);
 	return ret;
 }
+
 
 static int isp_probe(struct platform_device *pdev)
 {
@@ -276,6 +381,7 @@ static int isp_probe(struct platform_device *pdev)
 		log("Failed to register isp's subdev\n");
 		goto exit;
 	}
+    v4l2_device_call_all(&ispdev->v4l2_dev, 0, core, init, 1);
 
     return 0;
 free_video_device:
