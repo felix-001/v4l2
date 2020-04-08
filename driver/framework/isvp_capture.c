@@ -11,10 +11,30 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-ioctl.h>
+#include <apical-isp/apical_math.h>
+#include "apical-isp/system_i2c.h"
+#include <apical-isp/apical_isp_io.h>
+#include <apical-isp/system_io.h>
+#include <apical-isp/apical_configuration.h>
+#include <apical-isp/system_interrupts.h>
+#include <apical-isp/apical_isp_config.h>
+#include "apical-isp/system_semaphore.h"
+#include "apical-isp/apical_command_api.h"
+#include <apical-isp/apical_isp_core_nomem_settings.h>
+#include "apical-isp/sensor_drv.h"
+#include <apical-isp/apical_firmware_config.h>
+#include "apical-isp/apical_cmd_interface.h"
 
 #define ISP_VIC_NAME "tx-isp-vic"
 #define ISP_CORE_NAME "tx-isp-core"
 #define log(fmt, args...) printk("%s:%d $ "fmt"\n", __func__, __LINE__, ##args)
+#define ARRSZ(arr) sizeof(arr)/sizeof(arr[0])
+#define ISP_CLK_1080P_MODE 90000000
+
+static system_interrupt_handler_t isr_func[APICAL_IRQ_COUNT] = {NULL};
+static void* isr_param[APICAL_IRQ_COUNT] = {NULL};
+struct tx_isp_sensor_attribute sensor_attr, *attr = &sensor_attr;
+system_tab stab;
 
 typedef struct {
     struct v4l2_device v4l2_dev;
@@ -30,6 +50,8 @@ struct apical_control {
 
 struct isp_core_dev {
     struct v4l2_subdev sd;
+    struct task_struct *process_thread;
+    struct platform_device *pdev;
 };
 
 struct isp_vic_dev {
@@ -61,7 +83,7 @@ static int isvp_cropcap(struct file *file, void *priv, struct v4l2_cropcap *a)
 {
     isp_device_t *ispdev = video_drvdata(file);
 
-    v4l2_device_call_all(&ispdev->v4l2_dev, 0, video, cropcap, a);
+    v4l2_subdev_call(ispdev->sensor_sd, video, cropcap, a);
     return 0;
 }
 
@@ -148,14 +170,14 @@ static int isp_core_clk_enable(struct platform_device *pdev)
     int ret = 0;
 
     for (i=0; i<pdata->clk_num; i++) {
-		clks[i] = clk_get(core->dev, info[i].name);
+		clks[i] = clk_get(&pdev->dev, info[i].name);
 		if (IS_ERR(clks[i])) {
 			log("Failed to get %s clock %ld\n", info[i].name, PTR_ERR(clks[i]));
 			ret = PTR_ERR(clks[i]);
             goto exit;
 		}
 		if(info[i].rate != DUMMY_CLOCK_RATE) {
-			ret = clk_set_rate(clks[i], isp_clk);
+			ret = clk_set_rate(clks[i], ISP_CLK_1080P_MODE);
 			if(ret){
 				log("Failed to set %s clock rate(%ld)\n", info[i].name, info[i].rate);
                 goto exit;
@@ -172,12 +194,6 @@ exit:
     return ret;
 }
 
-static int isp_core_init(struct platform_device *pdev)
-{
-    isp_core_clk_enable(pdev);
-    return 0;
-}
-
 static int isp_fw_process(void *data)
 {
 	while(!kthread_should_stop()){
@@ -189,16 +205,40 @@ static int isp_fw_process(void *data)
 	return 0;
 }
 
+void system_program_interrupt_event(uint8_t event, uint8_t id)
+{
+	switch(event)
+	{
+		case 0: apical_isp_interrupts_interrupt0_source_write(id); break;
+		case 1: apical_isp_interrupts_interrupt1_source_write(id); break;
+		case 2: apical_isp_interrupts_interrupt2_source_write(id); break;
+		case 3: apical_isp_interrupts_interrupt3_source_write(id); break;
+		case 4: apical_isp_interrupts_interrupt4_source_write(id); break;
+		case 5: apical_isp_interrupts_interrupt5_source_write(id); break;
+		case 6: apical_isp_interrupts_interrupt6_source_write(id); break;
+		case 7: apical_isp_interrupts_interrupt7_source_write(id); break;
+		case 8: apical_isp_interrupts_interrupt8_source_write(id); break;
+		case 9: apical_isp_interrupts_interrupt9_source_write(id); break;
+		case 10: apical_isp_interrupts_interrupt10_source_write(id); break;
+		case 11: apical_isp_interrupts_interrupt11_source_write(id); break;
+		case 12: apical_isp_interrupts_interrupt12_source_write(id); break;
+		case 13: apical_isp_interrupts_interrupt13_source_write(id); break;
+		case 14: apical_isp_interrupts_interrupt14_source_write(id); break;
+		case 15: apical_isp_interrupts_interrupt15_source_write(id); break;
+	}
+}
+
 static int isp_core_ops_init(struct v4l2_subdev *sd, u32 on)
 {
     int ret = 0;
+    struct isp_core_dev *isp_core = (struct isp_core_dev *)v4l2_get_subdevdata(sd);
 
-    core->param = load_tx_isp_parameters(core->vin.attr);
+    isp_core_clk_enable(isp_core->pdev);
     apical_init();
     apical_connection_init();
     system_program_interrupt_event(APICAL_IRQ_DS1_OUTPUT_END, 50);
-    core->process_thread = kthread_run(isp_fw_process, NULL, "apical_isp_fw_process");
-    if(IS_ERR_OR_NULL(core->process_thread)){
+    isp_core->process_thread = kthread_run(isp_fw_process, NULL, "apical_isp_fw_process");
+    if(IS_ERR_OR_NULL(isp_core->process_thread)){
         log("%s[%d] kthread_run was failed!\n",__func__,__LINE__);
         ret = -1;
         goto exit;
@@ -214,21 +254,26 @@ static const struct v4l2_subdev_core_ops isp_core_subdev_core_ops ={
 
 int isp_core_video_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *crop)
 {
-    unsigned int chan = CROP_DS;
-    uint8_t id;
-    uint32_t value;
-    int ret = 0;
+    unsigned int chan = CROP_DS << 16;
+    int ret = 0, i;
     struct apical_control controls[] = 
     {
-        {IMAGE_RESIZE_WIDTH_ID, }
+        {IMAGE_RESIZE_WIDTH_ID,     chan + crop->c.width},
+        {IMAGE_RESIZE_HEIGHT_ID,    chan + crop->c.height},
+        {IMAGE_CROP_XOFFSET_ID,     chan + crop->c.left},
+        {IMAGE_CROP_YOFFSET_ID,     chan + crop->c.top},
+        {IMAGE_RESIZE_ENABLE_ID,    chan + ENABLE}
     };
 
     apical_isp_top_bypass_ds1_crop_write(0);
+    for (i=0; i<ARRSZ(controls); i++) {
+        apical_command(TIMAGE, controls[i].id, controls[i].value, COMMAND_SET, &ret);
+    }
     return 0;
 }
 
-static struct v4l2_subdev_video_ops	*isp_core_subdev_video_ops = {
-    .s_crop = isp_core_video_s_crop;
+static struct v4l2_subdev_video_ops	isp_core_subdev_video_ops = {
+    .s_crop = isp_core_video_s_crop,
 };
 
 static const struct v4l2_subdev_ops isp_core_ops ={
@@ -242,7 +287,6 @@ int isp_core_register(struct platform_device *pdev, struct v4l2_device *v4l2_dev
     int ret;
     struct v4l2_subdev *sd;
 
-    isp_core_init();
     isp_core = (struct isp_core_dev*)kzalloc(sizeof(*isp_core), GFP_KERNEL);
 	if(!isp_core){
 		log("Failed to allocate sensor device\n");
@@ -258,6 +302,7 @@ int isp_core_register(struct platform_device *pdev, struct v4l2_device *v4l2_dev
 		ret = -1;// FIXME
 		goto exit;
 	}
+    isp_core->pdev = pdev;
 
     return 0;
 exit:
@@ -410,6 +455,36 @@ static struct platform_driver isp_driver = {
         .owner = THIS_MODULE,
     },
 };
+
+void system_set_interrupt_handler(uint8_t source,
+		system_interrupt_handler_t handler, void* param)
+{
+	isr_func[source] = handler;
+	isr_param[source] = param;
+}
+
+static inline void isp_clear_irq_source(void)
+{
+	int event = 0;
+	for(event = 0; event < APICAL_IRQ_COUNT; event++){
+		system_program_interrupt_event(event, 0);
+	}
+}
+
+void system_init_interrupt(void)
+{
+	isp_clear_irq_source();
+}
+
+// FIXME    
+void system_hw_interrupts_disable(void)
+{
+}
+
+// FIXME
+void system_hw_interrupts_enable(void)
+{
+}
 
 static int __init isp_init(void)
 {
