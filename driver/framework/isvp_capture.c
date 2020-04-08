@@ -39,12 +39,21 @@ static void* isr_param[APICAL_IRQ_COUNT] = {NULL};
 struct tx_isp_sensor_attribute sensor_attr, *attr = &sensor_attr;
 system_tab stab;
 
+/* apical ISP channel define */
+enum isp_video_channel_define{
+	ISP_FR_VIDEO_CHANNEL,
+	ISP_DS1_VIDEO_CHANNEL,
+	ISP_DS2_VIDEO_CHANNEL,
+	ISP_MAX_OUTPUT_VIDEOS,
+};
+
 typedef struct {
     struct v4l2_device v4l2_dev;
     struct video_device *vfd;
     struct v4l2_subdev *sensor_sd;
     struct device *dev;
     struct v4l2_mbus_framefmt mbus;
+    int depth;
 } isp_device_t;
 
 struct apical_control {
@@ -113,6 +122,7 @@ static int isvp_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
     if (fmt.code == V4L2_MBUS_FMT_SBGGR10_1X10) {
         pix->pixelformat = V4L2_PIX_FMT_SBGGR12;
         depth = 16;
+        ispdev->depth = depth;
     }
     pix->bytesperline = pix->width * depth/8;
     pix->sizeimage = pix->bytesperline * pix->height;
@@ -305,9 +315,26 @@ int isp_core_video_s_stream(struct v4l2_subdev *sd, int enable)
     return 0;
 }
 
+int isp_core_video_s_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *fmt)
+{
+    int ret;
+    unsigned int base = 0x00b00 + 0x100 * ISP_DS1_VIDEO_CHANNEL; // the base of address of dma channel write
+    isp_device_t *ispdev = container_of(sd->v4l2_dev, isp_device_t, v4l2_dev);
+
+    if (fmt->code == V4L2_MBUS_FMT_SBGGR10_1X10) {
+        APICAL_WRITE_32(base, DMA_FORMAT_RAW16 & 0x0f);
+        APICAL_WRITE_32(base + 0x04, fmt->height << 16 | fmt->width);
+        APICAL_WRITE_32(base + 0x20, fmt->width * (ispdev->depth/8));//lineoffset
+        apical_command(TSCENE_MODES, DS1_OUTPUT_MODE_ID, RGB, COMMAND_SET, &ret);
+        APICAL_WRITE_32(0x6b0, 0xf);
+    }
+    return 0;
+}
+
 static struct v4l2_subdev_video_ops	isp_core_subdev_video_ops = {
     .s_crop = isp_core_video_s_crop,
     .s_stream = isp_core_video_s_stream,
+    .s_mbus_fmt = isp_core_video_s_mbus_fmt,
 };
 
 static const struct v4l2_subdev_ops isp_core_ops ={
