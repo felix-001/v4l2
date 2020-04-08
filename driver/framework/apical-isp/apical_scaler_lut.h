@@ -1,4 +1,8 @@
-#include "tx-isp-core.h"
+//#include "tx-isp-core.h"
+struct isp_reg_t {
+	unsigned int reg;
+	unsigned int value;
+};
 struct isp_reg_t apical_downscaler_lut[] =
 {
 	/* HFIL 00 */

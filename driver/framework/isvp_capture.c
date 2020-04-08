@@ -24,6 +24,9 @@
 #include "apical-isp/sensor_drv.h"
 #include <apical-isp/apical_firmware_config.h>
 #include "apical-isp/apical_cmd_interface.h"
+#include "apical-isp/apical_scaler_lut.h"
+#include "apical-isp/sensor_drv.h"
+#include <apical-isp/apical_firmware_config.h>
 
 #define ISP_VIC_NAME "tx-isp-vic"
 #define ISP_CORE_NAME "tx-isp-core"
@@ -41,6 +44,7 @@ typedef struct {
     struct video_device *vfd;
     struct v4l2_subdev *sensor_sd;
     struct device *dev;
+    struct v4l2_mbus_framefmt mbus;
 } isp_device_t;
 
 struct apical_control {
@@ -52,6 +56,7 @@ struct isp_core_dev {
     struct v4l2_subdev sd;
     struct task_struct *process_thread;
     struct platform_device *pdev;
+    isp_device_t *ispdev;
 };
 
 struct isp_vic_dev {
@@ -111,6 +116,7 @@ static int isvp_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
     }
     pix->bytesperline = pix->width * depth/8;
     pix->sizeimage = pix->bytesperline * pix->height;
+    ispdev->mbus = fmt;
 
     return 0;
 exit:
@@ -272,8 +278,36 @@ int isp_core_video_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *crop)
     return 0;
 }
 
+int isp_core_video_s_stream(struct v4l2_subdev *sd, int enable)
+{
+    int ret, i;
+    isp_device_t *ispdev = container_of(sd->v4l2_dev, isp_device_t, v4l2_dev);
+
+    apical_command(TSYSTEM, ISP_SYSTEM_STATE, PAUSE, COMMAND_SET, &ret);
+    /* 2-->module config updates during local vertical blanking */
+    apical_isp_top_config_buffer_mode_write(2);
+    /* set input port mode, mode1 */
+    APICAL_WRITE_32(0x100, 0x00100001);
+    apical_isp_top_active_width_write(ispdev->mbus.width);
+    apical_isp_top_active_height_write(ispdev->mbus.height);
+    if (ispdev->mbus.code == V4L2_MBUS_FMT_SBGGR10_1X10)
+        apical_isp_top_rggb_start_write(APICAL_ISP_TOP_RGGB_START_B_GB_GR_R); //Starting color of the rggb pattern
+    for(i = 0; i < ARRSZ(apical_downscaler_lut); i++)
+        APICAL_WRITE_32(apical_downscaler_lut[i].reg, apical_downscaler_lut[i].value);
+	/*
+	 * clear interrupts state of isp-core.
+	 * Interrupt event clear register writing 0-1 transition will clear the corresponding status bits.
+	 */
+	apical_isp_interrupts_interrupt_clear_write(0);
+	apical_isp_interrupts_interrupt_clear_write(0xffff);
+    apical_command(TSYSTEM, ISP_SYSTEM_STATE, RUN, COMMAND_SET, &ret);
+
+    return 0;
+}
+
 static struct v4l2_subdev_video_ops	isp_core_subdev_video_ops = {
     .s_crop = isp_core_video_s_crop,
+    .s_stream = isp_core_video_s_stream,
 };
 
 static const struct v4l2_subdev_ops isp_core_ops ={
