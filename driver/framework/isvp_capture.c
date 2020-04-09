@@ -132,6 +132,10 @@ struct isp_core_dev {
 	unsigned int banks_addr[ISP_DMA_WRITE_MAXBASE_NUM];
     unsigned char usingbanks;
     volatile unsigned int frame_state; // 0 : idle, 1 : processing
+    unsigned char reset_dma_flag;
+    unsigned char dma_state;
+    unsigned char vflip_flag[ISP_DMA_WRITE_MAXBASE_NUM];
+    unsigned int isp_daynight_switch;
 };
 
 struct isp_vic_dev {
@@ -427,7 +431,7 @@ static inline int isp_enable_channel(struct isp_core_dev *isp_core)
 
 	hw_dma = APICAL_READ_32(0xb24 + 0x100 * ISP_DS1_VIDEO_CHANNEL);
 	next_bank = (((hw_dma >> 8) & 0x7) + 1) % isp_core->usingbanks;
-	if(isp_core->bank_flag[next_bank] ^ chan->dma_state){
+	if(isp_core->bank_flag[next_bank] ^ isp_core->dma_state){
 		isp_core->dma_state = isp_core->bank_flag[next_bank];
 		isp_enable_dma_transfer(isp_core, isp_core->dma_state);
 	}
@@ -447,8 +451,7 @@ static inline void isp_core_update_addr(struct isp_core_dev *isp_core)
 	unsigned char bank_id = 0;
 	unsigned int current_active = 0;
 	unsigned int value = 0;
-	unsigned int isnv = 0;
-    isp_device_t *ispdev = container_of(isp_core->sd.v4l2_dev, isp_device_t, v4l2_dev);
+    //isp_device_t *ispdev = container_of(isp_core->sd.v4l2_dev, isp_device_t, v4l2_dev);
 
     y_hw_dma = APICAL_READ_32(0xb24 + 0x100 * ISP_DS1_VIDEO_CHANNEL);
     current_active |= y_hw_dma;
@@ -481,7 +484,7 @@ static int isp_set_buffer_lineoffset_vflip_disable(struct isp_core_dev *isp_core
 {
     isp_device_t *ispdev = container_of(isp_core->sd.v4l2_dev, isp_device_t, v4l2_dev);
     struct v4l2_mbus_framefmt *mbus = &ispdev->mbus;
-    int sizeimage;
+    int bytesperline;
 
     bytesperline = mbus->width * (ispdev->depth/8);
     APICAL_WRITE_32(0xb00 + 0x20 + 0x100 * ISP_DS1_VIDEO_CHANNEL, bytesperline);//lineoffset
@@ -492,7 +495,7 @@ static int isp_set_buffer_lineoffset_vflip_enable(struct isp_core_dev *isp_core)
 {
     isp_device_t *ispdev = container_of(isp_core->sd.v4l2_dev, isp_device_t, v4l2_dev);
     struct v4l2_mbus_framefmt *mbus = &ispdev->mbus;
-    int sizeimage;
+    int bytesperline;
 
     bytesperline = mbus->width * (ispdev->depth/8);
     APICAL_WRITE_32(0xb00 + 0x20 + 0x100 * ISP_DS1_VIDEO_CHANNEL, -bytesperline);//lineoffset
@@ -526,6 +529,7 @@ static int isp_core_interrupt_service_routine(struct v4l2_subdev *sd, u32 status
     int ret = IRQ_HANDLED;
     int i;
     struct isp_core_dev *isp_core = (struct isp_core_dev *)v4l2_get_subdevdata(sd);
+    unsigned char color = apical_isp_top_rggb_start_read();
 
     if((isp_irq_status = apical_isp_interrupts_interrupt_status_read()) != 0) {
         apical_isp_interrupts_interrupt_clear_write(0);
@@ -568,7 +572,6 @@ static int isp_core_interrupt_service_routine(struct v4l2_subdev *sd, u32 status
                         if(isp_core->dma_state != 1){
                             isp_enable_channel(isp_core);
                         }
-                        isp_frame_done_wakeup();
                         if (1 == isp_core->isp_daynight_switch) {
                             int ret = 0;
                             ret = apical_isp_day_or_night_s_ctrl_internal(isp_core);
@@ -694,7 +697,7 @@ static int vic_core_ops_init(struct v4l2_subdev *sd, u32 on)
     return 0;
 }
 
-int vic_core_video_s_stream(struct v4l2_subdev *sd, int enable)
+int vic_video_s_stream(struct v4l2_subdev *sd, int enable)
 {
     isp_device_t *ispdev = container_of(sd->v4l2_dev, isp_device_t, v4l2_dev);
     struct v4l2_mbus_framefmt *mbus = &ispdev->mbus;
@@ -718,8 +721,7 @@ static const struct v4l2_subdev_core_ops vic_core_subdev_core_ops ={
 };
 
 static struct v4l2_subdev_video_ops	vic_core_subdev_video_ops = {
-    .s_crop = vic_core_video_s_crop,
-    .s_stream = vic_core_video_s_stream,
+    .s_stream = vic_video_s_stream,
 };
 
 static const struct v4l2_subdev_ops vic_core_ops ={
