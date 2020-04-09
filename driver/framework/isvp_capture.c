@@ -546,69 +546,51 @@ static irqreturn_t isp_irq_handle(int this_irq, void *dev)
     return retval;
 }
 
-static int isp_probe(struct platform_device *pdev)
+static int isp_irq_init(isp_device_t *ispdev)
 {
-    int err, irq;
-    isp_device_t *ispdev;
-    struct i2c_adapter *adapter;
-    struct i2c_board_info board_info;
-    struct v4l2_subdev *sd;
+	struct platform_device *pdev = to_platform_device(ispdev->dev);
+    int irq, err;
     struct resource *res;
 
-    log("isp probe");
-    ispdev = (isp_device_t*)kzalloc(sizeof(*ispdev), GFP_KERNEL);
-    if (!ispdev) {
-        log("Failed to allocate camera device\n");
-        err = -ENOMEM;
-        goto exit;
-    }
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq = platform_get_irq(pdev, 0);
 	if (!res || !irq) {
 		log("%s[%d] Not enough platform resources",__func__,__LINE__);
 		err = -ENODEV;
-		goto free_video_device;
+		goto exit;
 	}
 	res = request_mem_region(res->start, res->end - res->start + 1, dev_name(&pdev->dev));
 	if (!res) {
 		log("%s[%d] Not enough memory for resources\n", __func__,__LINE__);
 		err = -EBUSY;
-		goto free_video_device;
+		goto exit;
 	}
 
 	ispdev->irqbase = ioremap(res->start, res->end - res->start + 1);
 	if (!ispdev->irqbase) {
 		log("%s[%d] Unable to ioremap registers\n", __func__,__LINE__);
 		err = -ENXIO;
-		goto free_video_device;
+		goto exit;
 	}
 	err = request_threaded_irq(irq, isp_irq_handle, isp_irq_thread_handle, IRQF_ONESHOT, "isp", ispdev);
 	if(err){
 		log("%s[%d] Failed to request irq(%d).\n", __func__,__LINE__, irq);
 		err = -EINTR;
-		goto free_video_device;
+		goto exit;
 	}
     ispdev->irq = irq;
-    ispdev->dev = &pdev->dev;
-    sprintf(ispdev->v4l2_dev.name, "isp v4l2 name");
-    err = v4l2_device_register(ispdev->dev, &ispdev->v4l2_dev);
-    if (err) {
-        log("Error registering v4l2 device");
-        goto exit;
-    }
-    ispdev->vfd = video_device_alloc();
-    if (!ispdev->vfd) {
-        log("alloc video device error");
-        err = -ENOMEM;
-        goto exit;
-    }
-    *ispdev->vfd = isvp_video_template;
-    err = video_register_device(ispdev->vfd, VFL_TYPE_GRABBER, -1);
-    if (err) {
-        log("Failed to register video device");
-        goto free_video_device;
-    }
-    video_set_drvdata(ispdev->vfd, ispdev);
+    return 0;
+exit:
+    return err;
+}
+
+static int isp_register_sensor(isp_device_t *ispdev)
+{
+    struct v4l2_subdev *sd;
+    struct i2c_adapter *adapter;
+    struct i2c_board_info board_info;
+    int err;
+
     adapter = i2c_get_adapter(0);
     if (!adapter) {
         log( "Failed to get I2C adapter 1, deferring probe");
@@ -636,7 +618,54 @@ static int isp_probe(struct platform_device *pdev)
         v4l2_device_unregister_subdev(sd);
         goto exit;
 	}
+    return 0;
+exit:
+    return err;
+}
 
+static int isp_probe(struct platform_device *pdev)
+{
+    int err;
+    isp_device_t *ispdev;
+
+    log("isp probe");
+    ispdev = (isp_device_t*)kzalloc(sizeof(*ispdev), GFP_KERNEL);
+    if (!ispdev) {
+        log("Failed to allocate camera device\n");
+        err = -ENOMEM;
+        goto exit;
+    }
+    ispdev->dev = &pdev->dev;
+    sprintf(ispdev->v4l2_dev.name, "isp v4l2 name");
+    err = v4l2_device_register(ispdev->dev, &ispdev->v4l2_dev);
+    if (err) {
+        log("Error registering v4l2 device");
+        goto exit;
+    }
+    ispdev->vfd = video_device_alloc();
+    if (!ispdev->vfd) {
+        log("alloc video device error");
+        err = -ENOMEM;
+        goto exit;
+    }
+    *ispdev->vfd = isvp_video_template;
+    err = video_register_device(ispdev->vfd, VFL_TYPE_GRABBER, -1);
+    if (err) {
+        log("Failed to register video device");
+        goto free_video_device;
+    }
+    video_set_drvdata(ispdev->vfd, ispdev);
+    err = isp_irq_init(ispdev);
+    if (err) {
+        log("Failed to init irq");
+        goto free_video_device;
+    }
+
+    err = isp_register_sensor(ispdev);
+    if (err) {
+        log("Failed to register sensor");
+        goto free_video_device;
+    }
 	err = bus_for_each_dev(&platform_bus_type, NULL, ispdev, isp_subdev_match);
 	if (err) {
 		log("Failed to register isp's subdev\n");
@@ -698,6 +727,7 @@ void system_hw_interrupts_disable(void)
 }
 
 // FIXME
+// TODO 
 void system_hw_interrupts_enable(void)
 {
 }
