@@ -27,12 +27,32 @@
 #include "apical-isp/apical_scaler_lut.h"
 #include "apical-isp/sensor_drv.h"
 #include <apical-isp/apical_firmware_config.h>
+#include <linux/interrupt.h>
+#include <asm/irq.h>
 
 #define ISP_VIC_NAME "tx-isp-vic"
 #define ISP_CORE_NAME "tx-isp-core"
 #define log(fmt, args...) printk("%s:%d $ "fmt"\n", __func__, __LINE__, ##args)
 #define ARRSZ(arr) sizeof(arr)/sizeof(arr[0])
 #define ISP_CLK_1080P_MODE 90000000
+#define isp_readl(base, reg)		__raw_readl((base) + (reg))
+#define isp_writel(base, reg, value)		__raw_writel((value), ((base) + (reg)))
+#define isp_readw(base, reg)		__raw_readw((base) + (reg))
+#define isp_writew(base, reg, value)		__raw_writew((value), ((base) + (reg)))
+#define isp_readb(base, reg)		__raw_readb((base) + (reg))
+#define isp_writeb(base, reg, value)		__raw_writeb((value), ((base) + (reg)))
+#define ISP_TOP_IRQ_CNT		0x0
+#define ISP_TOP_IRQ_CNT1		0x20
+#define ISP_TOP_IRQ_CNT2		0x24
+#define ISP_TOP_IRQ_CLR_1		0x4
+#define ISP_TOP_IRQ_CLR_ALL		0x8
+#define ISP_TOP_IRQ_STA		0xC
+#define ISP_TOP_IRQ_OVF		0x10
+#define ISP_TOP_IRQ_ENABLE		0x14
+#define ISP_TOP_IRQ_MASK		0x1c
+#define ISP_TOP_IRQ_ISP		0xffff
+#define ISP_TOP_IRQ_VIC		0x7f0000
+#define ISP_TOP_IRQ_ALL		0x7fffff
 
 static system_interrupt_handler_t isr_func[APICAL_IRQ_COUNT] = {NULL};
 static void* isr_param[APICAL_IRQ_COUNT] = {NULL};
@@ -54,6 +74,8 @@ typedef struct {
     struct device *dev;
     struct v4l2_mbus_framefmt mbus;
     int depth;
+    void __iomem *irqbase;
+    int irq;
 } isp_device_t;
 
 struct apical_control {
@@ -70,6 +92,9 @@ struct isp_core_dev {
 
 struct isp_vic_dev {
     struct v4l2_subdev sd;
+    void __iomem *irqbase;
+    int irq;
+    spinlock_t slock;
 };
 
 static int isvp_querycap(struct file *file, void  *priv, struct v4l2_capability *cap)
@@ -342,6 +367,46 @@ static const struct v4l2_subdev_ops isp_core_ops ={
 	.video = &isp_core_subdev_video_ops,
 };
 
+static int vic_core_ops_init(struct v4l2_subdev *sd, u32 on)
+{
+	volatile unsigned int reg;
+	unsigned long flags;
+    struct isp_vic_dev *vic = (struct isp_vic_dev *)v4l2_get_subdevdata(sd);
+
+    reg = isp_readl(vic->irqbase, ISP_TOP_IRQ_ENABLE);
+	reg |= on;
+	isp_writel(vic->irqbase, ISP_TOP_IRQ_ENABLE, reg);
+	spin_lock_irqsave(&vic->slock, flags);
+    enable_irq(vic->irq);
+    spin_unlock_irqrestore(&vic->slock, flags);
+
+    return 0;
+}
+
+int vic_core_video_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *crop)
+{
+    return 0;
+}
+
+int vic_core_video_s_stream(struct v4l2_subdev *sd, int enable)
+{
+    return 0;
+}
+
+static const struct v4l2_subdev_core_ops vic_core_subdev_core_ops ={
+	.init = vic_core_ops_init,
+};
+
+static struct v4l2_subdev_video_ops	vic_core_subdev_video_ops = {
+    .s_crop = vic_core_video_s_crop,
+    .s_stream = vic_core_video_s_stream,
+};
+
+static const struct v4l2_subdev_ops vic_core_ops ={
+	.core = &vic_core_subdev_core_ops,
+	.video = &vic_core_subdev_video_ops,
+};
+
 int isp_core_register(struct platform_device *pdev, struct v4l2_device *v4l2_dev)
 {
     struct isp_core_dev *isp_core;
@@ -375,6 +440,7 @@ int vic_dev_register(struct platform_device *pdev, struct v4l2_device *v4l2_dev)
     struct isp_vic_dev *vic;
     int ret;
     struct v4l2_subdev *sd;
+    isp_device_t *ispdev = container_of(v4l2_dev, isp_device_t, v4l2_dev);
 
     vic = (struct isp_vic_dev*)kzalloc(sizeof(*vic), GFP_KERNEL);
 	if(!vic){
@@ -383,6 +449,8 @@ int vic_dev_register(struct platform_device *pdev, struct v4l2_device *v4l2_dev)
 		goto exit;
 	}
     sd = &vic->sd;
+    vic->irqbase = ispdev->irqbase;
+    v4l2_subdev_init(sd, &vic_core_ops);
     v4l2_set_subdevdata(sd, vic);
 	ret = v4l2_device_register_subdev(v4l2_dev, sd);
 	if (ret < 0){
@@ -420,11 +488,12 @@ static int isp_subdev_match(struct device *dev, void *data)
 
 static int isp_probe(struct platform_device *pdev)
 {
-    int err;
+    int err, irq;
     isp_device_t *ispdev;
     struct i2c_adapter *adapter;
     struct i2c_board_info board_info;
     struct v4l2_subdev *sd;
+    struct resource *res;
 
     log("isp probe");
     ispdev = (isp_device_t*)kzalloc(sizeof(*ispdev), GFP_KERNEL);
@@ -433,7 +502,27 @@ static int isp_probe(struct platform_device *pdev)
         err = -ENOMEM;
         goto exit;
     }
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	irq = platform_get_irq(pdev, 0);
+	if (!res || !irq) {
+		log("%s[%d] Not enough platform resources",__func__,__LINE__);
+		err = -ENODEV;
+		goto free_video_device;
+	}
+	res = request_mem_region(res->start, res->end - res->start + 1, dev_name(&pdev->dev));
+	if (!res) {
+		log("%s[%d] Not enough memory for resources\n", __func__,__LINE__);
+		err = -EBUSY;
+		goto free_video_device;
+	}
 
+	ispdev->irqbase = ioremap(res->start, res->end - res->start + 1);
+	if (!ispdev->irqbase) {
+		log("%s[%d] Unable to ioremap registers\n", __func__,__LINE__);
+		err = -ENXIO;
+		goto free_video_device;
+	}
+    ispdev->irq = irq;
     ispdev->dev = &pdev->dev;
     sprintf(ispdev->v4l2_dev.name, "isp v4l2 name");
     err = v4l2_device_register(ispdev->dev, &ispdev->v4l2_dev);
