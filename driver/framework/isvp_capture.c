@@ -107,7 +107,9 @@ typedef struct {
     struct v4l2_mbus_framefmt mbus;
     int depth;
     void __iomem *irqbase;
+    spinlock_t slock;
     int irq;
+    volatile int state;
 } isp_device_t;
 
 struct apical_control {
@@ -546,6 +548,29 @@ static irqreturn_t isp_irq_handle(int this_irq, void *dev)
     return retval;
 }
 
+static void isp_disable_irq(isp_device_t *ispdev, int enable)
+{
+	volatile unsigned int reg = isp_readl(ispdev->irqbase, ISP_TOP_IRQ_ENABLE);
+	unsigned long flags;
+
+	spin_lock_irqsave(&ispdev->slock, flags);
+	reg &= ~enable;
+	isp_writel(ispdev->irqbase, ISP_TOP_IRQ_ENABLE, reg);
+	if(reg == 0 && ispdev->state){
+		ispdev->state = 0;
+		disable_irq(ispdev->irq);
+	}
+	spin_unlock_irqrestore(&ispdev->slock, flags);
+}
+
+static void isp_unmask_irq(isp_device_t *ispdev, int mask)
+{
+	volatile unsigned int reg = isp_readl(ispdev->irqbase, ISP_TOP_IRQ_MASK);
+
+	reg &= ~mask;
+	isp_writel(ispdev->irqbase, ISP_TOP_IRQ_MASK, reg);
+}
+
 static int isp_irq_init(isp_device_t *ispdev)
 {
 	struct platform_device *pdev = to_platform_device(ispdev->dev);
@@ -579,6 +604,8 @@ static int isp_irq_init(isp_device_t *ispdev)
 		goto exit;
 	}
     ispdev->irq = irq;
+	isp_disable_irq(ispdev, ISP_TOP_IRQ_ALL);
+	isp_unmask_irq(ispdev, ISP_TOP_IRQ_ISP);
     return 0;
 exit:
     return err;
