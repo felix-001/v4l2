@@ -41,6 +41,7 @@
 #define isp_writew(base, reg, value)		__raw_writew((value), ((base) + (reg)))
 #define isp_readb(base, reg)		__raw_readb((base) + (reg))
 #define isp_writeb(base, reg, value)		__raw_writeb((value), ((base) + (reg)))
+
 #define ISP_TOP_IRQ_CNT		0x0
 #define ISP_TOP_IRQ_CNT1		0x20
 #define ISP_TOP_IRQ_CNT2		0x24
@@ -53,6 +54,37 @@
 #define ISP_TOP_IRQ_ISP		0xffff
 #define ISP_TOP_IRQ_VIC		0x7f0000
 #define ISP_TOP_IRQ_ALL		0x7fffff
+
+#define VIC_DB_CFG		         0x0
+#define DVP_DATA_POS			(1<<24)
+#define DVP_RGB_ORDER			(1<<21)
+#define DVP_RAW_ALIG			(1<<20)
+#define DVP_DATA_TYPE			(17)
+#define DVP_RAW8			(0<<DVP_DATA_TYPE)
+#define DVP_RAW10			(1<<DVP_DATA_TYPE)
+#define DVP_RAW12			(2<<DVP_DATA_TYPE)
+#define DVP_YUV422_16BIT		(3<<DVP_DATA_TYPE)
+#define DVP_RGB565_16BIT		(4<<DVP_DATA_TYPE)
+#define DVP_BRG565_16BIT		(5<<DVP_DATA_TYPE)
+#define DVP_YUV422_8BIT			(6<<DVP_DATA_TYPE)
+#define DVP_RGB565_8BIT			(7<<DVP_DATA_TYPE)
+#define VIC_RESOLUTION	 	        0x20
+#define H_RESOLUTION			(1<<16)
+#define V_RESOLUTION			(1)
+#define VIC_GLOBAL_CFG             	(0x30)
+#define ISP_PRESET_MODE2		(0<<5)
+#define ISP_PRESET_MODE3		(1<<5)
+#define ISP_PRESET_MODE1		(2<<5)
+#define VCKE_EN				(1<<4)
+#define BLANK_EN			(2)
+#define AB_MODE_SELECT			(0)
+#define VIC_CONTROL			(0x34)
+#define VIC_RESET			(1<<4)
+#define GLB_SAFE_RST			(1<<3)
+#define GLB_RST				(1<<2)
+#define REG_ENABLE			(1<<1)
+#define VIC_SRART			(1<<0)
+
 
 static system_interrupt_handler_t isr_func[APICAL_IRQ_COUNT] = {NULL};
 static void* isr_param[APICAL_IRQ_COUNT] = {NULL};
@@ -93,6 +125,7 @@ struct isp_core_dev {
 struct isp_vic_dev {
     struct v4l2_subdev sd;
     void __iomem *irqbase;
+    void __iomem *portbase;
     int irq;
     spinlock_t slock;
 };
@@ -390,6 +423,20 @@ int vic_core_video_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *crop)
 
 int vic_core_video_s_stream(struct v4l2_subdev *sd, int enable)
 {
+    isp_device_t *ispdev = container_of(sd->v4l2_dev, isp_device_t, v4l2_dev);
+    struct v4l2_mbus_framefmt *mbus = &ispdev->mbus;
+    struct isp_vic_dev *vic = (struct isp_vic_dev *)v4l2_get_subdevdata(sd);
+
+    if (mbus->code == V4L2_MBUS_FMT_SBGGR10_1X10) {
+        int ret;
+
+        isp_writel(vic->portbase, VIC_DB_CFG, DVP_RAW10);
+		ret = (mbus->width<< 16) | (mbus->height);
+		isp_writel(vic->portbase, VIC_RESOLUTION, ret);
+		isp_writel(vic->portbase, VIC_GLOBAL_CFG, ISP_PRESET_MODE1);
+		isp_writel(vic->portbase, VIC_CONTROL, REG_ENABLE);
+		isp_writel(vic->portbase, VIC_CONTROL, VIC_SRART);
+    }
     return 0;
 }
 
