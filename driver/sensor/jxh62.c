@@ -48,6 +48,45 @@ typedef struct {
     struct v4l2_subdev sd;
 } isp_sensor_t;
 
+int jxh62_write(struct v4l2_subdev *sd, unsigned char reg,
+		unsigned char value)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	unsigned char buf[2] = {reg, value};
+	struct i2c_msg msg = {
+		.addr	= client->addr,
+		.flags	= 0,
+		.len	= 2,
+		.buf	= buf,
+	};
+	int ret;
+	ret = i2c_transfer(client->adapter, &msg, 1);
+	if (ret > 0)
+		ret = 0;
+
+	return ret;
+}
+
+static int jxh62_write_array(struct v4l2_subdev *sd, struct regval_list *vals)
+{
+	int ret;
+	while (vals->reg_num != JXH62_REG_END) {
+		if (vals->reg_num == JXH62_REG_DELAY) {
+			if (vals->value >= (1000 / HZ))
+				msleep(vals->value);
+			else
+				msleep(vals->value);
+		} else {
+			ret = jxh62_write(sd, vals->reg_num, vals->value);
+			if (ret < 0)
+				return ret;
+		}
+		vals++;
+	}
+	return 0;
+}
+
+
 static int jxh62_cropcap(struct v4l2_subdev *sd, struct v4l2_cropcap *cc)
 {
     cc->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -167,49 +206,37 @@ static struct regval_list jxh62_init_regs_1280_720_25fps[] = {
 	{JXH62_REG_END, 0x00},	/* END MARKER */
 };
 
+static struct regval_list jxh62_stream_on[] = {
+	{0x12, 0x00},
+	{JXH62_REG_END, 0x00},	/* END MARKER */
+};
+
+static struct regval_list jxh62_stream_off[] = {
+	{0x12, 0x40},
+	{JXH62_REG_END, 0x00},	/* END MARKER */
+};
+
+static int jxh62_s_stream(struct v4l2_subdev *sd, int enable)
+{
+	int ret = 0;
+
+	if (enable) {
+		ret = jxh62_write_array(sd, jxh62_stream_on);
+		pr_debug("jxh62 stream on\n");
+	}
+	else {
+		ret = jxh62_write_array(sd, jxh62_stream_off);
+		pr_debug("jxh62 stream off\n");
+	}
+	return ret;
+}
+
 static const struct v4l2_subdev_video_ops jxh62_video_ops = {
 	.cropcap = jxh62_cropcap,
     .s_crop = jxh62_s_crop,
     .g_mbus_fmt = jx62_g_mbus_fmt,
+    .s_stream = jxh62_s_stream,
 };
-
-int jxh62_write(struct v4l2_subdev *sd, unsigned char reg,
-		unsigned char value)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	unsigned char buf[2] = {reg, value};
-	struct i2c_msg msg = {
-		.addr	= client->addr,
-		.flags	= 0,
-		.len	= 2,
-		.buf	= buf,
-	};
-	int ret;
-	ret = i2c_transfer(client->adapter, &msg, 1);
-	if (ret > 0)
-		ret = 0;
-
-	return ret;
-}
-
-static int jxh62_write_array(struct v4l2_subdev *sd, struct regval_list *vals)
-{
-	int ret;
-	while (vals->reg_num != JXH62_REG_END) {
-		if (vals->reg_num == JXH62_REG_DELAY) {
-			if (vals->value >= (1000 / HZ))
-				msleep(vals->value);
-			else
-				msleep(vals->value);
-		} else {
-			ret = jxh62_write(sd, vals->reg_num, vals->value);
-			if (ret < 0)
-				return ret;
-		}
-		vals++;
-	}
-	return 0;
-}
 
 int jxh62_core_ops_init(struct v4l2_subdev *sd, u32 val)
 {
@@ -221,7 +248,7 @@ int jxh62_core_ops_init(struct v4l2_subdev *sd, u32 val)
     return 0;
 }
 
-struct v4l2_subdev_core_ops jxh62_core_ops= {
+struct v4l2_subdev_core_ops jxh62_core_ops = {
     .init = jxh62_core_ops_init, 
 };
 
