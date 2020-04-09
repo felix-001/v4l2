@@ -112,6 +112,8 @@ typedef struct {
     volatile int state;
 } isp_device_t;
 
+static isp_device_t *ispdevp;
+
 struct apical_control {
     uint8_t id;
     uint32_t value;
@@ -548,6 +550,21 @@ static irqreturn_t isp_irq_handle(int this_irq, void *dev)
     return retval;
 }
 
+static void isp_enable_irq(isp_device_t *ispdev, int enable)
+{
+	volatile unsigned int reg = isp_readl(ispdev->irqbase, ISP_TOP_IRQ_ENABLE);
+	unsigned long flags;
+
+	reg |= enable;
+	isp_writel(ispdev->irqbase, ISP_TOP_IRQ_ENABLE, reg);
+	spin_lock_irqsave(&ispdev->slock, flags);
+	if(ispdev->state == 0){
+		ispdev->state = 1;
+		enable_irq(ispdev->irq);
+	}
+	spin_unlock_irqrestore(&ispdev->slock, flags);
+}
+
 static void isp_disable_irq(isp_device_t *ispdev, int enable)
 {
 	volatile unsigned int reg = isp_readl(ispdev->irqbase, ISP_TOP_IRQ_ENABLE);
@@ -662,6 +679,7 @@ static int isp_probe(struct platform_device *pdev)
         err = -ENOMEM;
         goto exit;
     }
+    ispdevp = ispdev;
     ispdev->dev = &pdev->dev;
     sprintf(ispdev->v4l2_dev.name, "isp v4l2 name");
     err = v4l2_device_register(ispdev->dev, &ispdev->v4l2_dev);
@@ -748,15 +766,16 @@ void system_init_interrupt(void)
 	isp_clear_irq_source();
 }
 
-// FIXME    
 void system_hw_interrupts_disable(void)
 {
+    log("disable irq ISP_TOP_IRQ_ISP, called by apical");
+    isp_disable_irq(ispdevp, ISP_TOP_IRQ_ISP);
 }
 
-// FIXME
-// TODO 
 void system_hw_interrupts_enable(void)
 {
+    log("enable irq ISP_TOP_IRQ_ISP, called by apical");
+    isp_enable_irq(ispdevp, ISP_TOP_IRQ_ISP);
 }
 
 static int __init isp_init(void)
