@@ -46,6 +46,7 @@ MODULE_DEVICE_TABLE(i2c, jxh62_id);
 
 typedef struct {
     struct v4l2_subdev sd;
+    struct clk *mclk;
 } isp_sensor_t;
 
 int jxh62_write(struct v4l2_subdev *sd, unsigned char reg,
@@ -269,9 +270,19 @@ static int jxh62_probe(struct i2c_client *client, const struct i2c_device_id *id
 	}
 	memset(sensor, 0 ,sizeof(*sensor));
 
+	/* request mclk of sensor */
+	sensor->mclk = clk_get(NULL, "cgu_cim");
+	if (IS_ERR(sensor->mclk)) {
+		log("Cannot get sensor input clock cgu_cim\n");
+		goto exit;
+	}
+	clk_set_rate(sensor->mclk, 24000000);
+	clk_enable(sensor->mclk);
+    jzgpio_set_func(GPIO_PORT_A, GPIO_FUNC_1, 0x000343ff);
     sd = &sensor->sd;
 	v4l2_i2c_subdev_init(sd, client, &jxh62_ops);
 	v4l2_set_subdev_hostdata(sd, sensor);
+exit:
     return 0;
 }
 

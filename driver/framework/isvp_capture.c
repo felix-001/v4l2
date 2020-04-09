@@ -532,6 +532,19 @@ static int isp_subdev_match(struct device *dev, void *data)
 	return ret;
 }
 
+static irqreturn_t isp_irq_thread_handle(int this_irq, void *dev)
+{
+    irqreturn_t retval = IRQ_HANDLED;
+
+    return retval;
+}
+
+static irqreturn_t isp_irq_handle(int this_irq, void *dev)
+{
+    irqreturn_t retval = IRQ_HANDLED;
+
+    return retval;
+}
 
 static int isp_probe(struct platform_device *pdev)
 {
@@ -567,6 +580,12 @@ static int isp_probe(struct platform_device *pdev)
 	if (!ispdev->irqbase) {
 		log("%s[%d] Unable to ioremap registers\n", __func__,__LINE__);
 		err = -ENXIO;
+		goto free_video_device;
+	}
+	err = request_threaded_irq(irq, isp_irq_handle, isp_irq_thread_handle, IRQF_ONESHOT, "isp", ispdev);
+	if(err){
+		log("%s[%d] Failed to request irq(%d).\n", __func__,__LINE__, irq);
+		err = -EINTR;
 		goto free_video_device;
 	}
     ispdev->irq = irq;
