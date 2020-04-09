@@ -84,7 +84,7 @@
 #define GLB_RST				(1<<2)
 #define REG_ENABLE			(1<<1)
 #define VIC_SRART			(1<<0)
-
+#define ISP_DMA_WRITE_MAXBASE_NUM 5
 
 static system_interrupt_handler_t isr_func[APICAL_IRQ_COUNT] = {NULL};
 static void* isr_param[APICAL_IRQ_COUNT] = {NULL};
@@ -124,6 +124,14 @@ struct isp_core_dev {
     struct task_struct *process_thread;
     struct platform_device *pdev;
     isp_device_t *ispdev;
+    volatile int state;
+    unsigned char vflip_state;
+    unsigned int hflip_state; //0:disable, 1: enable
+	struct list_head fifo;
+	unsigned char bank_flag[ISP_DMA_WRITE_MAXBASE_NUM];
+	unsigned int banks_addr[ISP_DMA_WRITE_MAXBASE_NUM];
+    unsigned char usingbanks;
+    volatile unsigned int frame_state; // 0 : idle, 1 : processing
 };
 
 struct isp_vic_dev {
@@ -132,6 +140,18 @@ struct isp_vic_dev {
     void __iomem *portbase;
     int irq;
     spinlock_t slock;
+};
+
+struct frame_channel_buffer {
+	struct list_head entry;
+	unsigned int addr;
+	void *priv;
+};
+
+enum {
+	ISP_STATE_STOP,
+	ISP_STATE_START,
+	ISP_STATE_RUN,
 };
 
 static int isvp_querycap(struct file *file, void  *priv, struct v4l2_capability *cap)
@@ -326,8 +346,261 @@ exit:
     return ret;
 }
 
-static const struct v4l2_subdev_core_ops isp_core_subdev_core_ops ={
+static struct frame_channel_buffer *pop_buffer_fifo(struct list_head *fifo)
+{
+	struct frame_channel_buffer *buf;
+
+	if(!list_empty(fifo)){
+		buf = list_first_entry(fifo, struct frame_channel_buffer, entry);
+        log("^-^ %s %d %p %p^-^\n",__func__,__LINE__, fifo, buf);
+		list_del(&(buf->entry));
+	}else
+		buf = NULL;
+
+	return buf;
+}
+
+static void inline push_buffer_fifo(struct list_head *fifo, struct frame_channel_buffer *buf)
+{
+    log("^@^ %s %d %p %p^-^\n",__func__,__LINE__, fifo, buf);
+	list_add_tail(&(buf->entry), fifo);
+}
+
+static void inline cleanup_buffer_fifo(struct list_head *fifo)
+{
+	struct frame_channel_buffer *buf;
+
+	while(!list_empty(fifo)){
+		buf = list_first_entry(fifo, struct frame_channel_buffer, entry);
+		list_del(&(buf->entry));
+	}
+}
+
+
+static int isp_configure_base_addr(struct isp_core_dev *isp_core)
+{
+	struct frame_channel_buffer *buf;
+	unsigned int hw_dma = 0;
+	unsigned char current_bank = 0;
+	unsigned char bank_id = 0;
+	unsigned char i = 0;
+    int bytesperline = 0;
+    isp_device_t *ispdev = container_of(isp_core->sd.v4l2_dev, isp_device_t, v4l2_dev);
+    struct v4l2_mbus_framefmt *mbus = &ispdev->mbus;
+    int sizeimage;
+
+    bytesperline = mbus->width * (ispdev->depth/8);
+    sizeimage = bytesperline * mbus->height;
+    // TODO need to set isp_core->state
+    if(isp_core->state == ISP_STATE_RUN){
+        hw_dma = APICAL_READ_32(0xb24 + 0x100*ISP_DS1_VIDEO_CHANNEL);
+        current_bank = (hw_dma >> 8) & 0x7;
+        /* The begin pointer is next bank. */
+        for(i = 0, bank_id = current_bank; i < isp_core->usingbanks; i++, bank_id++){
+            bank_id = bank_id % isp_core->usingbanks;
+            if(isp_core->bank_flag[bank_id] == 0){
+                buf = pop_buffer_fifo(&isp_core->fifo);
+                if(buf != NULL){
+                    APICAL_WRITE_32((0xb00 + 0x08 + 0x100 * ISP_DS1_VIDEO_CHANNEL + 0x04 * bank_id), buf->addr + sizeimage - bytesperline);// lineoffset
+                    isp_core->bank_flag[bank_id] = 1;
+                } else
+                    break;
+            }
+        }
+    }
+	return 0;
+}
+
+static int isp_enable_dma_transfer(struct isp_core_dev *isp_core, int onoff)
+{
+    if(onoff)
+        APICAL_WRITE_32(0xb00 + 0x24 + 0x100*(ISP_DS1_VIDEO_CHANNEL), 0x02);// axi_port_enable set 1, frame_write_cancel set 0.
+    else
+        APICAL_WRITE_32(0xb00 + 0x24 + 0x100*(ISP_DS1_VIDEO_CHANNEL), 0x03);// axi_port_enable set 1, frame_write_cancel set 0.
+	return 0;
+}
+
+static inline int isp_enable_channel(struct isp_core_dev *isp_core)
+{
+	unsigned int hw_dma = 0;
+	unsigned char next_bank = 0;
+
+	hw_dma = APICAL_READ_32(0xb24 + 0x100 * ISP_DS1_VIDEO_CHANNEL);
+	next_bank = (((hw_dma >> 8) & 0x7) + 1) % isp_core->usingbanks;
+	if(isp_core->bank_flag[next_bank] ^ chan->dma_state){
+		isp_core->dma_state = isp_core->bank_flag[next_bank];
+		isp_enable_dma_transfer(isp_core, isp_core->dma_state);
+	}
+	return 0;
+}
+
+#define ISP_CHAN_DMA_STAT (1<<16)
+#define ISP_CHAN_DMA_ACTIVE (1<<16)
+static inline void isp_core_update_addr(struct isp_core_dev *isp_core)
+{
+	unsigned int y_hw_dma = 0;
+	unsigned int uv_hw_dma = 0;
+	unsigned char current_bank = 0;
+	unsigned char uv_bank = 0;
+	unsigned char last_bank = 0;
+	unsigned char next_bank = 0;
+	unsigned char bank_id = 0;
+	unsigned int current_active = 0;
+	unsigned int value = 0;
+	unsigned int isnv = 0;
+    isp_device_t *ispdev = container_of(isp_core->sd.v4l2_dev, isp_device_t, v4l2_dev);
+
+    y_hw_dma = APICAL_READ_32(0xb24 + 0x100 * ISP_DS1_VIDEO_CHANNEL);
+    current_active |= y_hw_dma;
+	current_bank = (y_hw_dma >> 8) & 0x7;
+	uv_bank = (uv_hw_dma >> 8) & 0x7;
+
+	if(isp_core->reset_dma_flag){
+		log("y_bank = %d, nv_bank = %d\n", current_bank, uv_bank);
+		value = (0x0<<3) | (isp_core->usingbanks - 1);
+        APICAL_WRITE_32(0xb1c + 0x100*ISP_DS1_VIDEO_CHANNEL, value);
+		isp_core->reset_dma_flag = 0;
+	}
+
+	if((current_active & ISP_CHAN_DMA_STAT) == ISP_CHAN_DMA_ACTIVE){
+		last_bank = (y_hw_dma >> 11) & 0x7;
+		bank_id = last_bank;
+	} else {
+		bank_id = current_bank;
+	}
+    // TODO  
+    // frame_channel_video_irq_notify move to here
+	next_bank = (current_bank + 1) % isp_core->usingbanks;
+	if(isp_core->bank_flag[next_bank] != 1) {
+		isp_enable_channel(isp_core);
+	}
+	return;
+}
+
+static int isp_set_buffer_lineoffset_vflip_disable(struct isp_core_dev *isp_core)
+{
+    isp_device_t *ispdev = container_of(isp_core->sd.v4l2_dev, isp_device_t, v4l2_dev);
+    struct v4l2_mbus_framefmt *mbus = &ispdev->mbus;
+    int sizeimage;
+
+    bytesperline = mbus->width * (ispdev->depth/8);
+    APICAL_WRITE_32(0xb00 + 0x20 + 0x100 * ISP_DS1_VIDEO_CHANNEL, bytesperline);//lineoffset
+	return 0;
+}
+
+static int isp_set_buffer_lineoffset_vflip_enable(struct isp_core_dev *isp_core)
+{
+    isp_device_t *ispdev = container_of(isp_core->sd.v4l2_dev, isp_device_t, v4l2_dev);
+    struct v4l2_mbus_framefmt *mbus = &ispdev->mbus;
+    int sizeimage;
+
+    bytesperline = mbus->width * (ispdev->depth/8);
+    APICAL_WRITE_32(0xb00 + 0x20 + 0x100 * ISP_DS1_VIDEO_CHANNEL, -bytesperline);//lineoffset
+
+	return 0;
+}
+
+static int isp_modify_dma_direction(struct isp_core_dev *isp_core)
+{
+	unsigned int hw_dma = 0;
+	unsigned char next_bank = 0;
+
+	if(isp_core->state == ISP_STATE_RUN){
+		hw_dma = APICAL_READ_32(0xb24 + 0x100 * ISP_DS1_VIDEO_CHANNEL);
+		next_bank = (((hw_dma >> 8) & 0x7) + 1) % isp_core->usingbanks;
+		if(isp_core->vflip_flag[next_bank] ^ isp_core->vflip_state){
+			isp_core->vflip_state = isp_core->vflip_flag[next_bank];
+			if(isp_core->vflip_state){
+				isp_set_buffer_lineoffset_vflip_enable(isp_core);
+			}else{
+				isp_set_buffer_lineoffset_vflip_disable(isp_core);
+			}
+		}
+	}
+	return 0;
+}
+
+static int isp_core_interrupt_service_routine(struct v4l2_subdev *sd, u32 status, bool *handled)
+{
+    unsigned short isp_irq_status = 0;
+    int ret = IRQ_HANDLED;
+    int i;
+    struct isp_core_dev *isp_core = (struct isp_core_dev *)v4l2_get_subdevdata(sd);
+
+    if((isp_irq_status = apical_isp_interrupts_interrupt_status_read()) != 0) {
+        apical_isp_interrupts_interrupt_clear_write(0);
+        apical_isp_interrupts_interrupt_clear_write(isp_irq_status);
+
+        for(i = 0; i < APICAL_IRQ_COUNT; i++){
+            if(isr_func[i])
+                isr_func[i](isr_param[i]);
+            if(isp_irq_status & (1 << i)){
+                switch(i){
+                    case APICAL_IRQ_FRAME_START:
+                        log("^~^ frame start ^~^\n");
+                        isp_configure_base_addr(isp_core);
+                        ret = IRQ_WAKE_THREAD;
+                        break;
+                    case APICAL_IRQ_FRAME_WRITER_FR:
+                        isp_core_update_addr(isp_core);
+                        isp_modify_dma_direction(isp_core);
+                        break;
+                    case APICAL_IRQ_FRAME_WRITER_DS:
+                        isp_core_update_addr(isp_core);
+                        isp_modify_dma_direction(isp_core);
+                        break;
+                    case APICAL_IRQ_FRAME_END:
+                        if(isp_core->hflip_state == apical_isp_top_bypass_mirror_read())						{
+                            if(isp_core->hflip_state){
+                                color ^= 1;
+                            }else{
+                                if(contrl->pattern != color){
+                                    color ^= 1;
+                                }
+                            }
+                            apical_isp_top_rggb_start_write(color);
+                            apical_isp_top_bypass_mirror_write(isp_core->hflip_state ?0:1);
+                        }
+                        /* APICAL_WRITE_32(0x18,2);  */
+                        isp_core->frame_state = 0;
+                        isp_configure_base_addr(isp_core);
+                        isp_modify_dma_direction(isp_core);
+                        if(isp_core->dma_state != 1){
+                            isp_enable_channel(isp_core);
+                        }
+                        isp_frame_done_wakeup();
+                        if (1 == isp_core->isp_daynight_switch) {
+                            int ret = 0;
+                            ret = apical_isp_day_or_night_s_ctrl_internal(isp_core);
+                            if (ret)
+                                log("%s[%d] apical_isp_day_or_night_s_ctrl_internal failed!\n", __func__, __LINE__);
+                            isp_core->isp_daynight_switch = 0;
+                        }
+                    case APICAL_IRQ_AE_STATS:
+                    case APICAL_IRQ_AWB_STATS:
+                    case APICAL_IRQ_AF_STATS:
+                    case APICAL_IRQ_FPGA_FRAME_START:
+                    case APICAL_IRQ_FPGA_FRAME_END:
+                    case APICAL_IRQ_FPGA_WDR_BUF:
+                    case APICAL_IRQ_DS1_OUTPUT_END:
+                        isp_modify_dma_direction(isp_core);
+                        if(isp_core->dma_state != 1){
+                            isp_enable_channel(isp_core);
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+static const struct v4l2_subdev_core_ops isp_core_subdev_core_ops = {
 	.init = isp_core_ops_init,
+    .interrupt_service_routine = isp_core_interrupt_service_routine,
 };
 
 int isp_core_video_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *crop)
@@ -393,6 +666,7 @@ int isp_core_video_s_mbus_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt 
     return 0;
 }
 
+
 static struct v4l2_subdev_video_ops	isp_core_subdev_video_ops = {
     .s_crop = isp_core_video_s_crop,
     .s_stream = isp_core_video_s_stream,
@@ -417,11 +691,6 @@ static int vic_core_ops_init(struct v4l2_subdev *sd, u32 on)
     enable_irq(vic->irq);
     spin_unlock_irqrestore(&vic->slock, flags);
 
-    return 0;
-}
-
-int vic_core_video_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *crop)
-{
     return 0;
 }
 
@@ -746,9 +1015,9 @@ static struct platform_driver isp_driver = {
     },
 };
 
-void system_set_interrupt_handler(uint8_t source,
-		system_interrupt_handler_t handler, void* param)
+void system_set_interrupt_handler(uint8_t source, system_interrupt_handler_t handler, void* param)
 {
+    log("set interrupt handler, called by apical");
 	isr_func[source] = handler;
 	isr_param[source] = param;
 }
@@ -756,6 +1025,7 @@ void system_set_interrupt_handler(uint8_t source,
 static inline void isp_clear_irq_source(void)
 {
 	int event = 0;
+
 	for(event = 0; event < APICAL_IRQ_COUNT; event++){
 		system_program_interrupt_event(event, 0);
 	}
@@ -763,6 +1033,7 @@ static inline void isp_clear_irq_source(void)
 
 void system_init_interrupt(void)
 {
+    log("clear irq souces, called by apical");
 	isp_clear_irq_source();
 }
 
