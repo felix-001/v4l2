@@ -799,6 +799,93 @@ int apical_dynamic_calibration(LookupTable** table )
     return 0;
 }
 
+int apical_green_equalization(TXispPrivCustomerParamer *customer)
+{
+    /* green equalization */
+    apical_isp_raw_frontend_ge_strength_write(customer->ge_strength);
+    apical_isp_raw_frontend_ge_threshold_write(customer->ge_threshold);
+    apical_isp_raw_frontend_ge_slope_write(customer->ge_slope);
+    apical_isp_raw_frontend_ge_sens_write(customer->ge_sensitivity);
+
+    /* dpc configuration	 */
+    apical_isp_raw_frontend_dp_enable_write(customer->dp_module);
+    apical_isp_raw_frontend_hpdev_threshold_write(customer->hpdev_threshold);
+    apical_isp_raw_frontend_line_thresh_write(customer->line_threshold);
+    apical_isp_raw_frontend_hp_blend_write(customer->hp_blend);
+
+    apical_isp_demosaic_vh_slope_write(customer->dmsc_vh_slope);
+    apical_isp_demosaic_aa_slope_write(customer->dmsc_aa_slope);
+    apical_isp_demosaic_va_slope_write(customer->dmsc_va_slope);
+    apical_isp_demosaic_uu_slope_write(customer->dmsc_uu_slope);
+    apical_isp_demosaic_sat_slope_write(customer->dmsc_sat_slope);
+    apical_isp_demosaic_vh_thresh_write(customer->dmsc_vh_threshold);
+    apical_isp_demosaic_aa_thresh_write(customer->dmsc_aa_threshold);
+    apical_isp_demosaic_va_thresh_write(customer->dmsc_va_threshold);
+    apical_isp_demosaic_uu_thresh_write(customer->dmsc_uu_threshold);
+    apical_isp_demosaic_sat_thresh_write(customer->dmsc_sat_threshold);
+    apical_isp_demosaic_vh_offset_write(customer->dmsc_vh_offset);
+    apical_isp_demosaic_aa_offset_write(customer->dmsc_aa_offset);
+    apical_isp_demosaic_va_offset_write(customer->dmsc_va_offset);
+    apical_isp_demosaic_uu_offset_write(customer->dmsc_uu_offset);
+    apical_isp_demosaic_sat_offset_write(customer->dmsc_sat_offset);
+    apical_isp_demosaic_lum_thresh_write(customer->dmsc_luminance_thresh);
+    apical_isp_demosaic_np_offset_write(customer->dmsc_np_offset);
+    apical_isp_demosaic_dmsc_config_write(customer->dmsc_config);
+    apical_isp_demosaic_ac_thresh_write(customer->dmsc_ac_threshold);
+    apical_isp_demosaic_ac_slope_write(customer->dmsc_ac_slope);
+    apical_isp_demosaic_ac_offset_write(customer->dmsc_ac_offset);
+    apical_isp_demosaic_fc_slope_write(customer->dmsc_fc_slope);
+    apical_isp_demosaic_fc_alias_slope_write(customer->dmsc_fc_alias_slope);
+    apical_isp_demosaic_fc_alias_thresh_write(customer->dmsc_fc_alias_thresh);
+    apical_isp_demosaic_np_off_write(customer->dmsc_np_off);
+    apical_isp_demosaic_np_off_reflect_write(customer->dmsc_np_reflect);
+
+    apical_isp_temper_recursion_limit_write(customer->temper_recursion_limit);
+    apical_isp_frame_stitch_short_thresh_write(customer->wdr_short_thresh);
+    apical_isp_frame_stitch_long_thresh_write(customer->wdr_long_thresh);
+    apical_isp_frame_stitch_exposure_ratio_write(customer->wdr_expo_ratio_thresh);
+    apical_isp_frame_stitch_stitch_correct_write(customer->wdr_stitch_correct);
+    apical_isp_frame_stitch_stitch_error_thresh_write(customer->wdr_stitch_error_thresh);
+    apical_isp_frame_stitch_stitch_error_limit_write(customer->wdr_stitch_error_limit);
+    apical_isp_frame_stitch_black_level_out_write(customer->wdr_stitch_bl_long);
+    apical_isp_frame_stitch_black_level_short_write(customer->wdr_stitch_bl_short);
+    apical_isp_frame_stitch_black_level_long_write(customer->wdr_stitch_bl_output);
+
+    return 0;
+}
+
+int set_stab(int ret, LookupTable** table)
+{ 
+    if (reason == IMAGE_WDR_MODE_LINEAR) {
+        stab.global_minimum_sinter_strength = *((uint16_t *)(table[ _CALIBRATION_SINTER_STRENGTH_LINEAR]->ptr) + 1);
+        stab.global_maximum_sinter_strength = *((uint16_t *)(table[ _CALIBRATION_SINTER_STRENGTH_LINEAR]->ptr) + 
+                table[_CALIBRATION_SINTER_STRENGTH_LINEAR]->rows * table[_CALIBRATION_SINTER_STRENGTH_LINEAR]->cols -1 );
+        stab.global_maximum_directional_sharpening = *((uint16_t *)(table[ _CALIBRATION_SHARP_ALT_D_LINEAR]->ptr) + 1);
+        stab.global_minimum_directional_sharpening = *((uint16_t *)(table[ _CALIBRATION_SHARP_ALT_D_LINEAR]->ptr) +
+                table[_CALIBRATION_SHARP_ALT_D_LINEAR]->rows * table[_CALIBRATION_SHARP_ALT_D_LINEAR]->cols -1 );
+        stab.global_maximum_un_directional_sharpening = *((uint16_t *)(table[ _CALIBRATION_SHARP_ALT_UD_LINEAR]->ptr) + 1);
+        stab.global_minimum_un_directional_sharpening = *((uint16_t *)(table[ _CALIBRATION_SHARP_ALT_UD_LINEAR]->ptr) +
+                table[_CALIBRATION_SHARP_ALT_UD_LINEAR]->rows * table[_CALIBRATION_SHARP_ALT_UD_LINEAR]->cols -1 );
+        stab.global_maximum_iridix_strength = *(uint8_t *)(table[_CALIBRATION_IRIDIX_STRENGTH_MAXIMUM_LINEAR]->ptr);
+    } else if (reason == IMAGE_WDR_MODE_FS_HDR) {
+        stab.global_minimum_sinter_strength = *((uint16_t *)(table[ _CALIBRATION_SINTER_STRENGTH_FS_HDR]->ptr) + 1);
+        stab.global_maximum_sinter_strength = *((uint16_t *)(table[ _CALIBRATION_SINTER_STRENGTH_FS_HDR]->ptr) +
+                table[_CALIBRATION_SINTER_STRENGTH_LINEAR]->rows * table[_CALIBRATION_SINTER_STRENGTH_LINEAR]->cols -1 );
+        stab.global_maximum_directional_sharpening = *((uint16_t *)(table[ _CALIBRATION_SHARP_ALT_D_FS_HDR]->ptr) + 1);
+        stab.global_minimum_directional_sharpening = *((uint16_t *)(table[ _CALIBRATION_SHARP_ALT_D_FS_HDR]->ptr) +
+                table[_CALIBRATION_SHARP_ALT_D_LINEAR]->rows * table[_CALIBRATION_SHARP_ALT_D_LINEAR]->cols -1 );
+        stab.global_maximum_un_directional_sharpening = *((uint16_t *)(table[ _CALIBRATION_SHARP_ALT_UD_FS_HDR]->ptr) + 1);
+        stab.global_minimum_un_directional_sharpening = *((uint16_t *)(table[ _CALIBRATION_SHARP_ALT_UD_FS_HDR]->ptr) +
+                table[_CALIBRATION_SHARP_ALT_UD_LINEAR]->rows * table[_CALIBRATION_SHARP_ALT_UD_LINEAR]->cols -1 );
+        stab.global_maximum_iridix_strength = *(uint8_t *)(table[_CALIBRATION_IRIDIX_STRENGTH_MAXIMUM_WDR]->ptr);
+    }
+    stab.global_minimum_temper_strength = *((uint16_t *)(table[ _CALIBRATION_TEMPER_STRENGTH]->ptr) + 1);
+    stab.global_maximum_temper_strength = *((uint16_t *)(table[ _CALIBRATION_TEMPER_STRENGTH]->ptr) +
+            table[_CALIBRATION_TEMPER_STRENGTH]->rows * table[_CALIBRATION_TEMPER_STRENGTH]->cols -1 );
+    stab.global_minimum_iridix_strength = *(uint8_t *)(table[_CALIBRATION_IRIDIX_MIN_MAX_STR]->ptr);
+    return 0;
+}
+
 int apical_isp_day_or_night_s_ctrl_internal(struct isp_core_dev *isp_core)
 {
     unsigned int tmp_top = 0;
@@ -806,6 +893,7 @@ int apical_isp_day_or_night_s_ctrl_internal(struct isp_core_dev *isp_core)
 	LookupTable** table = NULL;
 	TXispPrivCustomerParamer *customer = NULL;
     TXispPrivParamManage *param;
+    int ret;
 
     tmp_top = APICAL_READ_32(0x40);
     if(dn == ISP_CORE_RUNING_MODE_DAY_MODE) {
@@ -821,10 +909,34 @@ int apical_isp_day_or_night_s_ctrl_internal(struct isp_core_dev *isp_core)
     }
 
     if(table && customer) {
+        apical_dynamic_calibration(table);
+        apical_green_equalization(customer);
+        /* Max ISP Digital Gain */
+        status = apical_command(TSYSTEM, SYSTEM_MAX_ISP_DIGITAL_GAIN, customer->max_isp_dgain, COMMAND_SET, &ret);
+        if(status != 0) {
+            log("Custom set max isp digital gain failure!reture value is %d,reason is %d\n",status,ret);
+        }
+        /* Max Sensor Analog Gain */
+        status = apical_command(TSYSTEM, SYSTEM_MAX_SENSOR_ANALOG_GAIN, customer->max_sensor_again, COMMAND_SET, &ret);
+        if(status != 0) {
+            log("Custom set max isp digital gain failure!reture value is %d,reason is %d\n",status,ret);
+        }
+        /* modify the node */
+        status = apical_command(TIMAGE, WDR_MODE_ID, -1, COMMAND_SET, &ret);
+        if(status != 0) {
+            log("get wdr mode failure!reture value is %d,reason is %d\n", status, ret);
+        }
+        set_stab(ret, table);
+
         tmp_top = (tmp_top | 0x0c02da6c) & (~(customer->top));
         tmp_top |= 0x00fc0000;
-        apical_dynamic_calibration(table);
+        APICAL_WRITE_32(0x40, tmp_top);
+        if ((customer->top) & (1 << 27))
+            apical_isp_ds1_sharpen_enable_write(1);
+        else
+            apical_isp_ds1_sharpen_enable_write(0);
     }
+    ctrls->daynight = dn;
 
     return 0;
 }
