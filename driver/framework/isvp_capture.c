@@ -85,6 +85,9 @@
 #define REG_ENABLE			(1<<1)
 #define VIC_SRART			(1<<0)
 #define ISP_DMA_WRITE_MAXBASE_NUM 5
+#define TX_ISP_VERSION_SIZE 8
+#define TX_ISP_VERSION_ID "1.38"
+#define TX_ISP_PRIV_PARAM_FLAG_SIZE	8
 
 static system_interrupt_handler_t isr_func[APICAL_IRQ_COUNT] = {NULL};
 static void* isr_param[APICAL_IRQ_COUNT] = {NULL};
@@ -97,6 +100,18 @@ enum isp_video_channel_define{
 	ISP_DS1_VIDEO_CHANNEL,
 	ISP_DS2_VIDEO_CHANNEL,
 	ISP_MAX_OUTPUT_VIDEOS,
+};
+
+enum __tx_isp_private_parameters_index {
+	TX_ISP_PRIV_PARAM_BASE_INDEX,
+	TX_ISP_PRIV_PARAM_CUSTOM_INDEX,
+	TX_ISP_PRIV_PARAM_MAX_INDEX,
+};
+
+enum __tx_isp_private_parameters_mode {
+	TX_ISP_PRIV_PARAM_DAY_MODE,
+	TX_ISP_PRIV_PARAM_NIGHT_MODE,
+	TX_ISP_PRIV_PARAM_BUTT_MODE,
 };
 
 typedef struct {
@@ -119,6 +134,40 @@ struct apical_control {
     uint32_t value;
 };
 
+#define ISP_DMA_WRITE_MAXBASE_NUM 5
+#define ISP_DMA_WRITE_BANK_FLAG_UNCONFIG 0
+#define ISP_DMA_WRITE_BANK_FLAG_CONFIG 1
+enum apical_isp_format_check_index {
+	APICAL_ISP_INPUT_RAW_FMT_INDEX_START = 0,
+	APICAL_ISP_INPUT_RGB888_FMT_INDEX_START = 0,
+	APICAL_ISP_INPUT_YUV_FMT_INDEX_START = 0,
+	APICAL_ISP_NV12_FMT_INDEX = 0,
+	APICAL_ISP_NV21_FMT_INDEX,
+	APICAL_ISP_YUYV_FMT_INDEX,
+	APICAL_ISP_UYVY_FMT_INDEX,
+	APICAL_ISP_INPUT_YUV_FMT_INDEX_END = APICAL_ISP_UYVY_FMT_INDEX,
+	APICAL_ISP_YUV444_FMT_INDEX,
+	APICAL_ISP_INPUT_RGB565_FMT_INDEX_START = APICAL_ISP_YUV444_FMT_INDEX,
+	APICAL_ISP_RGB565_FMT_INDEX,
+	APICAL_ISP_INPUT_RGB565_FMT_INDEX_END = APICAL_ISP_RGB565_FMT_INDEX,
+	APICAL_ISP_RGB24_FMT_INDEX,
+	APICAL_ISP_RGB888_FMT_INDEX,
+	APICAL_ISP_INPUT_RGB888_FMT_INDEX_END = APICAL_ISP_RGB888_FMT_INDEX,
+	APICAL_ISP_RGB310_FMT_INDEX,
+	APICAL_ISP_RAW_FMT_INDEX,
+	APICAL_ISP_INPUT_RAW_FMT_INDEX_END = APICAL_ISP_RAW_FMT_INDEX,
+	APICAL_ISP_FMT_MAX_INDEX,
+};
+
+struct apical_isp_contrl {
+	unsigned int infmt;
+	unsigned short inwidth;
+	unsigned short inheight;
+	unsigned int pattern;
+	enum apical_isp_format_check_index fmt_start;
+	enum apical_isp_format_check_index fmt_end;
+};
+
 struct isp_core_dev {
     struct v4l2_subdev sd;
     struct task_struct *process_thread;
@@ -136,6 +185,7 @@ struct isp_core_dev {
     unsigned char dma_state;
     unsigned char vflip_flag[ISP_DMA_WRITE_MAXBASE_NUM];
     unsigned int isp_daynight_switch;
+    struct apical_isp_contrl contrl;
 };
 
 struct isp_vic_dev {
@@ -152,11 +202,134 @@ struct frame_channel_buffer {
 	void *priv;
 };
 
+#define CONTRAST_CURVES_MAXNUM 10
+typedef unsigned char contrast_curves[CONTRAST_CURVES_MAXNUM][2];
+
+typedef struct __tx_isp_private_customer_paramters{
+	union {
+		struct {
+			unsigned int 				: 2;
+			unsigned int sensor_offset	: 1;
+			unsigned int digital_gain	: 1;
+			unsigned int gamma_fe		: 1;
+			unsigned int raw_front		: 1;
+			unsigned int defect_pixel	: 1;
+			unsigned int frame_stitch	: 1;
+			unsigned int gamma_fe_pos	: 1;
+			unsigned int sinter		: 1;
+			unsigned int temper		: 1;
+			unsigned int order		: 1;
+			unsigned int wb_module	: 1;
+			unsigned int 			: 1;
+			unsigned int mesh		: 1;
+			unsigned int iridix		: 1;
+			unsigned int 			: 1;
+			unsigned int matrix		: 1;
+			unsigned int fr_crop		: 1;
+			unsigned int fr_gamma		: 1;
+			unsigned int fr_sharpen		: 1;
+			unsigned int 			: 3;
+			unsigned int ds1_crop		: 1;
+			unsigned int ds1_scaler		: 1;
+			unsigned int ds1_gamma		: 1;
+			unsigned int ds1_sharpen	: 1;
+			unsigned int 			: 4;
+		};
+		unsigned int top;
+	};
+	/* green equalization */
+	unsigned int ge_strength;
+	unsigned int ge_threshold;
+	unsigned int ge_slope;
+	unsigned int ge_sensitivity;
+	/* defect pixel correct configuration */
+	unsigned int dp_module;
+	unsigned int hpdev_threshold;
+	unsigned int line_threshold;
+	unsigned int hp_blend;
+	/* demosaic configuration */
+	unsigned int dmsc_vh_slope;
+	unsigned int dmsc_aa_slope;
+	unsigned int dmsc_va_slope;
+	unsigned int dmsc_uu_slope;
+	unsigned int dmsc_sat_slope;
+	unsigned int dmsc_vh_threshold;
+	unsigned int dmsc_aa_threshold;
+	unsigned int dmsc_va_threshold;
+	unsigned int dmsc_uu_threshold;
+	unsigned int dmsc_sat_threshold;
+	unsigned int dmsc_vh_offset;
+	unsigned int dmsc_aa_offset;
+	unsigned int dmsc_va_offset;
+	unsigned int dmsc_uu_offset;
+	unsigned int dmsc_sat_offset;
+	unsigned int dmsc_luminance_thresh;
+	unsigned int dmsc_np_offset;
+	unsigned int dmsc_config;
+	unsigned int dmsc_ac_threshold;
+	unsigned int dmsc_ac_slope;
+	unsigned int dmsc_ac_offset;
+	unsigned int dmsc_fc_slope;
+	unsigned int dmsc_fc_alias_slope;
+	unsigned int dmsc_fc_alias_thresh;
+	struct {
+		unsigned int dmsc_np_off : 6;
+		unsigned int dmsc_np_reflect : 1;
+		unsigned int : 25;
+	};
+	/* Temper */
+	unsigned int temper_recursion_limit;
+	/* WDR configuration */
+	unsigned int wdr_short_thresh;
+	unsigned int wdr_long_thresh;
+	unsigned int wdr_expo_ratio_thresh;
+	unsigned int wdr_stitch_correct;
+	unsigned int wdr_stitch_error_thresh;
+	unsigned int wdr_stitch_error_limit;
+	unsigned int wdr_stitch_bl_long;
+	unsigned int wdr_stitch_bl_short;
+	unsigned int wdr_stitch_bl_output;
+	/* other configuration */
+	unsigned int max_isp_dgain;
+	unsigned int max_sensor_again;
+
+	unsigned char sharpness;
+	unsigned char saturation;
+	unsigned char brightness;
+	/* the parameters is contrast curve */
+	contrast_curves contrast;
+} TXispPrivCustomerParamer;
+
+typedef struct __tx_isp_private_parameters_header{
+	char flag[TX_ISP_PRIV_PARAM_FLAG_SIZE];
+	unsigned int size;		/* the memory size of the parameter array */
+	unsigned int crc;
+} TXispPrivParamHeader;
+
+typedef struct __tx_isp_private_parameters_manage {
+	char version[TX_ISP_VERSION_SIZE];
+	TXispPrivParamHeader headers[TX_ISP_PRIV_PARAM_MAX_INDEX];
+	void *data;								//the base address of all data.
+	unsigned int data_size;
+	void *fw_data;								//the base address of isp FW parameters.
+	ApicalCalibrations isp_param[TX_ISP_PRIV_PARAM_BUTT_MODE];			//the struct of private0 manager.
+	LookupTable param_table[_CALIBRATION_TOTAL_SIZE * TX_ISP_PRIV_PARAM_BUTT_MODE];
+	void *base_buf;							//the address of private0 data.
+	TXispPrivCustomerParamer *customer;				//the struct of private1 pointer.
+	void *customer_buf;							//the address of private1 data.
+} TXispPrivParamManage;
+
 enum {
 	ISP_STATE_STOP,
 	ISP_STATE_START,
 	ISP_STATE_RUN,
 };
+
+typedef enum isp_core_mode_day_and_night {
+	ISP_CORE_RUNING_MODE_DAY_MODE,
+	ISP_CORE_RUNING_MODE_NIGHT_MODE,
+	ISP_CORE_RUNING_MODE_BUTT,
+} ISP_CORE_MODE_DN_E;
 
 static int isvp_querycap(struct file *file, void  *priv, struct v4l2_capability *cap)
 {
@@ -523,6 +696,47 @@ static int isp_modify_dma_direction(struct isp_core_dev *isp_core)
 	return 0;
 }
 
+int apical_dynamic_calibration(LookupTable** table )
+{
+    int ret;
+#define APICAL_CALIBRATION(cmd) apical_api_calibration(cmd, COMMAND_SET, table[_##cmd]->ptr, table[_##cmd]->rows * table[_##cmd]->cols * table[_##cmd]->width, &ret)
+
+    APICAL_CALIBRATION(CALIBRATION_NP_LUT_MEAN);
+    APICAL_CALIBRATION(CALIBRATION_EVTOLUX_PROBABILITY_ENABLE);
+    return 0;
+}
+
+int apical_isp_day_or_night_s_ctrl_internal(struct isp_core_dev *isp_core)
+{
+    unsigned int tmp_top = 0;
+    ISP_CORE_MODE_DN_E dn;// TODO
+	LookupTable** table = NULL;
+	TXispPrivCustomerParamer *customer = NULL;
+    TXispPrivParamManage *param;
+
+    tmp_top = APICAL_READ_32(0x40);
+    if(dn == ISP_CORE_RUNING_MODE_DAY_MODE) {
+        apical_isp_ds1_cs_conv_clip_min_uv_write(0);
+        apical_isp_ds1_cs_conv_clip_max_uv_write(1023);
+        table = param->isp_param[TX_ISP_PRIV_PARAM_DAY_MODE].calibrations;
+        customer = &param->customer[TX_ISP_PRIV_PARAM_DAY_MODE];
+    } else {
+        apical_isp_ds1_cs_conv_clip_min_uv_write(512);
+        apical_isp_ds1_cs_conv_clip_max_uv_write(512);
+        table = param->isp_param[TX_ISP_PRIV_PARAM_NIGHT_MODE].calibrations;
+        customer = &param->customer[TX_ISP_PRIV_PARAM_NIGHT_MODE];
+    }
+
+    if(table && customer) {
+        tmp_top = (tmp_top | 0x0c02da6c) & (~(customer->top));
+        tmp_top |= 0x00fc0000;
+        apical_dynamic_calibration(table);
+
+    }
+
+    return 0;
+}
+
 static int isp_core_interrupt_service_routine(struct v4l2_subdev *sd, u32 status, bool *handled)
 {
     unsigned short isp_irq_status = 0;
@@ -530,6 +744,7 @@ static int isp_core_interrupt_service_routine(struct v4l2_subdev *sd, u32 status
     int i;
     struct isp_core_dev *isp_core = (struct isp_core_dev *)v4l2_get_subdevdata(sd);
     unsigned char color = apical_isp_top_rggb_start_read();
+    struct apical_isp_contrl *contrl = &isp_core->contrl;
 
     if((isp_irq_status = apical_isp_interrupts_interrupt_status_read()) != 0) {
         apical_isp_interrupts_interrupt_clear_write(0);
